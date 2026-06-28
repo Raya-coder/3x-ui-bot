@@ -1260,7 +1260,47 @@ async function getUser(env, chatId) {
 }
 
 async function deleteUser(env, chatId) {
-  await kvDelete(env, `${KV_USERS_PREFIX}${chatId}`);
+  // Cascade cleanup — wipe ALL data related to this chatId so the user
+  // is truly gone and no orphan state can come back to bite us later.
+  // Order matters: backup first (so we can't accidentally lose it mid-cleanup),
+  // then indexes, then per-state keys.
+  try { await deleteUserBackup(env, chatId); } catch (e) { console.error("deleteUser: backup cleanup failed:", shortError(e)); }
+
+  // User record itself
+  try { await kvDelete(env, `${KV_USERS_PREFIX}${chatId}`); } catch (e) { console.error("deleteUser: user record cleanup failed:", shortError(e)); }
+
+  // Banned / suspended state (if any)
+  try { await kvDelete(env, `${KV_BANNED_PREFIX}${chatId}`); } catch {}
+  try { await kvDelete(env, `${KV_SUSPENDED_PREFIX}${chatId}`); } catch {}
+
+  // Admin role (in case the deleted account was an admin)
+  try { await removePanelAdmin(env, chatId); } catch {}
+
+  // Renewal / alert records that reference this chatId
+  try { await kvDelete(env, `${KV_RENEWAL_PREFIX}${chatId}`); } catch {}
+  try { await kvDelete(env, `${KV_ALERT_PREFIX}${chatId}`); } catch {}
+
+  // FSM / conversation state — same list as the `admin_back` handler
+  const stateKeys = [
+    `${STATE_REG_PREFIX}${chatId}`,
+    `${STATE_ADDPANEL_PREFIX}${chatId}`,
+    `${STATE_RENEW_PREFIX}${chatId}`,
+    `addgb_action:${chatId}`,
+    `renew_action:${chatId}`,
+    `search_action:${chatId}`,
+    `create_action:${chatId}`,
+    `xray_update_action:${chatId}`,
+    `ban_action:${chatId}`,
+    `ban_reason:${chatId}`,
+    `suspend_action:${chatId}`,
+    `suspend_min:${chatId}`,
+    `suspend_reason:${chatId}`,
+    `addadmin_action:${chatId}`,
+    `node_add_action:${chatId}`,
+  ];
+  for (const key of stateKeys) {
+    try { await stateDelete(env, key); } catch {}
+  }
 }
 
 async function findUserByEmail(env, clientEmail, panelId) {
@@ -2773,9 +2813,12 @@ async function restartPanel(panel) {
 }
 
 async function getServerLogs(panel) {
-  try {
-    return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "GET");
-  } catch { return null; }
+  // Surface the real error to the caller so the admin can see WHY
+  // logs failed (auth error, 404, panel down, etc.) instead of always
+  // seeing the misleading "no logs found" message.
+  // The caller (panel_logs: callback handler) wraps this in try/catch
+  // and shows `shortError(error)` to the admin.
+  return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "GET");
 }
 
 async function addInbound(panel, inboundData) {
@@ -4331,16 +4374,14 @@ async function handleStart(chatId, fromId, env) {
   // SECOND: Check if already registered as normal user
   const existingUser = await getUser(env, chatId);
   if (existingUser) {
-    const panel = await resolvePanelAsync(env, existingUser.panelId);
-    const client = await getClientByIdentifier(existingUser.clientEmail, env, existingUser.panelId);
-
-    if (client && panel) {
-      await sendUserMenu(chatId, env);
-    } else {
-      await sendTelegram(chatId, "⚠️ حساب کاربری شما یافت نشد. لطفاً مجدداً ثبت‌نام کنید.", env);
-      await deleteUser(env, chatId);
-      await startRegistration(chatId, env);
-    }
+    // IMPORTANT: do NOT auto-delete the user when the panel/client is
+    // temporarily unreachable. The panel may be restarting, the network
+    // may be flaky, or the panel admin may have moved the client.
+    // `sendUserMenu()` already handles the missing-client case by showing
+    // the locally-cached backup info and prompting re-registration only
+    // when no backup exists. Auto-deleting here was a regression that
+    // silently wiped accounts on transient outages.
+    await sendUserMenu(chatId, env);
     return;
   }
 
