@@ -1183,10 +1183,22 @@ async function setAction(chatId, action, param, env, panelId) {
   const token = generateToken(8);
   const stateKey = String(chatId);
   const state = (await stateGet(env, stateKey)) || { actions: {} };
+
+  // `param` historically carries the combined "panelId:identifier" string
+  // (see makeCallbackData, delete_confirm, reset_traffic_confirm callers).
+  // We must store ONLY the identifier portion — otherwise downstream code
+  // that reads `actionObj.identifier` ends up calling
+  // getClientByIdentifier("US:Pp", ...) instead of getClientByIdentifier("Pp", ...),
+  // which fails to find the client (or worse, finds a stray one).
+  let identifier = param;
+  if (panelId && typeof param === "string" && param.startsWith(panelId + ":")) {
+    identifier = param.slice(panelId.length + 1);
+  }
+
   state.actions[token] = {
     action,
     panelId: panelId || "",
-    identifier: param,
+    identifier,
     createdAt: Date.now(),
   };
   // Clean old actions
@@ -6967,7 +6979,15 @@ async function handleCallbackQuery(callbackQuery, env) {
         return;
       }
 
-      const { action, panelId, identifier } = actionObj;
+      const { action, panelId } = actionObj;
+      // Defensive: strip leading "panelId:" prefix from identifier if present.
+      // Older tokens stored before the setAction fix carry the combined
+      // "panelId:identifier" string in the identifier field. Strip the prefix
+      // so we look up the right client.
+      let { identifier } = actionObj;
+      if (panelId && typeof identifier === "string" && identifier.startsWith(panelId + ":")) {
+        identifier = identifier.slice(panelId.length + 1);
+      }
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
         await answerCallbackQuery(callbackQueryId, env, "پنل یافت نشد");
