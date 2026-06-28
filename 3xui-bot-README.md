@@ -1,114 +1,206 @@
-# 🤖 3X-UI Telegram Bot — Cloudflare Worker
+# 3X-UI Telegram Bot — Cloudflare Worker v2.0
 
-ربات مدیریت کامل پنل 3x-ui روی Cloudflare Worker با پشتیبانی از چند پنل، مدیریت کاربران،_nodes، و سیستم بن/تعلیق.
+## قابلیت‌های جدید
 
-> **سازگار با آخرین نسخه 3x-ui** ([MHSanaei/3x-ui](https://github.com/MHSanaei/3x-ui))
+### ✅ قابلیت‌های درخواستی
+1. **مشاهده مصرف توسط کاربر غیر ادمین** — کاربران با `/start` ثبت‌نام کرده و با `/usage` مصرف خود را می‌بینند
+2. **مدیریت Nodes توسط ادمین** — افزودن/حذف پنل با `/addpanel` و `/dellpanel`
+3. **هماهنگی با آخرین نسخه 3x-ui** — پشتیبانی از API نسخه v2.x و v3.x
+4. **مدیریت چند پنل** — اضافه کردن و مدیریت پنل‌های متعدد به صورت داینامیک
+5. **درخواست تمدید از سمت کاربر** — با `/renew` و تایید فوری توسط ادمین
+6. **بکاپ خودکار** — ارسال بکاپ خودکار به ادمین در بازه‌های زمانی مشخص
+7. **هشدار Xray** — هشدار در صورت کرش یا توقف Xray با امکان ریستارت فوری
 
----
-
-## ✨ قابلیت‌ها
-
-### 👤 کاربر عادی
-- 📊 مشاهده مصرف حجم (آپلود/دانلود/باقیمانده/درصد)
-- 📅 مشاهده تاریخ انقضا و زمان باقیمانده
-- 🔗 دریافت لینک اشتراک با QR Code
-- 🔄 درخواست تمدید (زمان/حجم) با محدودیت ۱ ساعت
-- 📋 مشاهده اطلاعات پشتیبان (در صورت دسترسی نداشتن به پنل)
-
-### 🛠️ ادمین — مدیریت کاربران
-- 🔍 جستجوی کاربر در تمام پنل‌ها
-- 👥 لیست کاربران با صفحه‌بندی
-- ➕ ساخت کاربر جدید (با QR Code خودکار)
-- 🗑 حذف کاربر (با تایید)
-- ✅ فعال/⛔ غیرفعال کردن
-- ➕ افزایش حجم / ⏱ تمدید زمان
-- ♻️ ریست ترافیک کاربر
-- 🌐 مشاهده IPهای متصل
-- 🔗 دریافت لینک اشتراک + QR Code
-
-### 🛠️ ادمین — مدیریت سرور
-- 📊 وضعیت سرور (CPU/RAM/Disk/Uptime/Network/TCP/UDP)
-- 🟢 کاربران آنلاین
-- 🔄 ریستارت Xray / ⏹ توقف Xray
-- 🔄 ریستارت پنل 3x-ui
-- 📋 لاگ سرور و لاگ Xray
-- 📦 بکاپ دستی + بکاپ خودکار (هر ۶ ساعت)
-- 📊 گزارش روزانه (هر روز ساعت ۹)
-- 📡 نسخه پنل و Xray
-- 📊 تاریخچه CPU سرور
-
-### 🛠️ ادمین — مدیریت Nodes
-- 🌐 لیست nodes با وضعیت (CPU/RAM/آنلاین/latency)
-- ➕ افزودن node (آدرس → پورت → نام → توکن API)
-- 🗑 حذف node با تایید
-
-### 🛠️ ادمین — مدیریت Inbounds
-- 📦 لیست inboundها
-- 🗑 حذف inbound با تایید
-- 📥 ریست ترافیک تمام inboundها
-
-### 🛠️ ادمین — سایر
-- 🔑 مدیریت توکن‌های API (لیست/حذف)
-- 📡 مشاهده Outbounds و ترافیک
-- ⚙️ مشاهده تنظیمات پنل
-- 👥 گروه‌های کاربری
-- 🗑 حذف کاربران منقضی/یتیم
-- 📤 خروجی کاربران
-- 📡 Xray Observability
-- 📋 لاگ خطاها (سیستم دیباگ داخلی)
-
-### 🚫 بن و تعلیق
-- `/ban <chatId> [دلیل]` — بن دائمی
-- `/unban <chatId>` — رفع بن
-- `/suspend <chatId> <دقیقه> [دلیل]` — تعلیق موقت
-- `/unsuspend <chatId>` — لغو تعلیق
-- `/bannedlist` — لیست بن‌شده‌ها
-
-### 📱 بکاپ کاربران
-- ذخیره خودکار اطلاعات کاربران در KV
-- در صورت حذف پنل، اطلاعات کاربران حفظ میشه
-- ادمین میتونه لیست بکاپ همه کاربران رو ببینه
+### 🆕 قابلیت‌های اضافه شده
+- **گزارش روزانه** — ارسال گزارش کامل وضعیت سرور و کاربران
+- **هشدار منابع** — هشدار CPU/RAM هنگام عبور از آستانه
+- **API HTTP** — اندپوینت `/api/usage?email=xxx` برای دریافت مصرف به صورت API
+- **خروجی تنظیمات** — `/export` برای صادر کردن کانفیگ پنل‌ها
+- **QR Code اشتراک** — ارسال QR Code لینک اشتراک
+- **تشخیص خودکار نسخه API** — تلاش خودکار مسیرهای مختلف API
 
 ---
 
-## 📋 پیش‌نیازها
+## نصب و راه‌اندازی
 
-- اکانت **Cloudflare** (رایگان)
-- **Telegram Bot Token** (از [@BotFather](https://t.me/BotFather))
-- پنل **3x-ui** نصب شده
-- **API Token** پنل (از Settings → Security → API Token)
+### ۱. پیش‌نیازها
+- اکانت Cloudflare
+- Wrangler CLI نصب شده
+- یک Telegram Bot Token (از @BotFather)
+
+### ۲. تنظیم wrangler.toml
+
+```toml
+name = "3xui-bot"
+main = "3xui-bot-worker.js"
+compatibility_date = "2024-01-01"
+
+# KV Namespace برای ذخیره‌سازی
+[[kv_namespaces]]
+binding = "BOT_KV"
+id = "YOUR_KV_NAMESPACE_ID"
+
+# Cron Triggers
+[triggers]
+crons = [
+  "*/5 * * * *",    # Xray health check - هر 5 دقیقه
+  "*/10 * * * *",   # Resource alerts - هر 10 دقیقه
+  "0 9 * * *",      # Daily report - هر روز ساعت 9
+  "0 */6 * * *",    # Auto backup - هر 6 ساعت
+  "*/30 * * * *",   # Renewal check - هر 30 دقیقه
+]
+```
+
+### ۳. تنظیم متغیرهای محیطی
+
+```bash
+# Telegram Bot Token
+wrangler secret put BOT_TOKEN
+
+# تنظیمات پنل‌ها (JSON)
+wrangler secret put PANELS_JSON
+```
+
+### مثال PANELS_JSON:
+
+```json
+{
+  "botToken": "YOUR_BOT_TOKEN",
+  "adminChatIds": ["123456789"],
+  "alertChatIds": ["123456789"],
+  "alertCooldownMinutes": 60,
+  "cpuRamAlertThreshold": 80,
+  "backupIntervalHours": 24,
+  "dailyReportEnabled": true,
+  "panels": [
+    {
+      "id": "server1",
+      "name": "سرور آلمان",
+      "panelUrl": "https://de.example.com:54321",
+      "apiToken": "YOUR_API_TOKEN",
+      "inboundIds": [1, 2, 3],
+      "subBaseUrl": "https://sub.example.com",
+      "subPath": "sub",
+      "authType": "bearer"
+    },
+    {
+      "id": "server2",
+      "name": "سرور هلند",
+      "panelUrl": "https://nl.example.com:54321",
+      "apiToken": "YOUR_API_TOKEN_2",
+      "authType": "bearer"
+    }
+  ]
+}
+```
+
+### ۴. تنظیم Webhook
+
+```bash
+# Deploy
+wrangler deploy
+
+# Set webhook
+curl "https://api.telegram.org/bot<BOT_TOKEN>/setWebhook?url=https://<YOUR_WORKER>.workers.dev/webhook"
+```
+
+### ۵. ساخت KV Namespace
+
+```bash
+wrangler kv:namespace create "BOT_KV"
+# سپس ID دریافتی را در wrangler.toml قرار دهید
+```
 
 ---
 
-## 📁 فایل‌ها
+## دستورات
 
-| فایل | توضیح |
-|------|--------|
-| `3xui-bot-worker.js` | کد اصلی ربات (Cloudflare Worker) |
-| `DEPLOY-GUIDE.md` | راهنمای استقرار روی Cloudflare Dashboard |
-| `3xui-bot-README.md` | این فایل |
+### 👤 دستورات کاربر
+| دستور | توضیح |
+|--------|--------|
+| `/start` | شروع و ثبت‌نام |
+| `/usage` | مشاهده مصرف |
+| `/renew <days> [gb]` | درخواست تمدید |
+| `/help` | راهنما |
+
+### 🛠️ دستورات ادمین
+| دستور | توضیح |
+|--------|--------|
+| `/admin` | پنل مدیریت |
+| `/status [panelId]` | وضعیت سرور |
+| `/panels` | لیست پنل‌ها |
+| `/addpanel` | افزودن پنل جدید |
+| `/dellpanel <id>` | حذف پنل |
+| `/adduser <email> <days> <gb> [panelId]` | افزودن کاربر |
+| `/users [page]` | لیست کاربران |
+| `/backup [panelId]` | دریافت بکاپ |
+| `/renewals` | درخواست‌های تمدید معلق |
+| `/report` | گزارش روزانه |
+| `/export` | خروجی تنظیمات |
 
 ---
 
-## 🚀 نصب سریع
+## API HTTP
 
-راهنمای کامل در [`DEPLOY-GUIDE.md`](DEPLOY-GUIDE.md).
+### دریافت مصرف کاربر
 
-خلاصه:
-1. KV Namespace به نام `BOT_KV` بسازید
-2. KV Namespace به نام `BOT_STATE` بسازید
-3. Worker جدید بسازید و کد `3xui-bot-worker.js` رو کپی کنید
-4. متغیرهای محیطی `BOT_TOKEN` و `SUPPORT_USERNAME` رو تنظیم کنید
-5. Cron Triggers رو اضافه کنید
-6. Webhook رو تنظیم کنید
-7. `/makeadmin` رو بزنید!
+```
+GET /api/usage?email=user@example.com&panel=server1
+```
+
+پاسخ:
+```json
+{
+  "email": "user@example.com",
+  "enabled": true,
+  "expired": false,
+  "upload": 1073741824,
+  "download": 2147483648,
+  "totalUsed": 3221225472,
+  "totalLimit": 107374182400,
+  "remaining": 104153956992,
+  "expiryTime": 1735689600000,
+  "uploadGB": "1.00 GB",
+  "downloadGB": "2.00 GB",
+  "totalUsedGB": "3.00 GB",
+  "totalLimitGB": "100.00 GB"
+}
+```
+
+### Health Check
+
+```
+GET /health
+```
+
+پاسخ:
+```json
+{
+  "status": "ok",
+  "version": "2.0.0"
+}
+```
 
 ---
 
-## 🤝 مشارکت
+## معماری
 
-Pull Request و Issue welcome!
+### ذخیره‌سازی (KV)
+- `user:<chatId>` — اطلاعات کاربر ثبت‌نام شده
+- `panels:config` — تنظیمات پنل‌ها (داینامیک)
+- `renewal:<id>` — درخواست‌های تمدید
+- `alert:xray:<panelId>` — وضعیت هشدار Xray
+- `alert:resource:<panelId>` — وضعیت هشدار منابع
+- `backup:<panelId>` — زمان آخرین بکاپ
 
-## 📜 لایسنس
-
-MIT
+### ساختار ماژولار
+1. **Constants** — ثابت‌ها و تنظیمات پیش‌فرض
+2. **KV Helpers** — عملیات ذخیره‌سازی
+3. **User Management** — ثبت‌نام و مدیریت کاربران
+4. **Renewal System** — سیستم تمدید
+5. **Panel Config** — مدیریت پنل‌ها
+6. **Telegram API** — ارتباط با تلگرام
+7. **Panel API** — ارتباط با 3x-ui
+8. **Client Operations** — عملیات کاربران 3x-ui
+9. **Health Monitoring** — نظارت بر سلامت Xray و منابع
+10. **Command Handlers** — پردازش دستورات

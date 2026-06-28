@@ -37,180 +37,86 @@ const KV_RENEWAL_PREFIX = "renewal:";
 const KV_ALERT_PREFIX = "alert:";
 const KV_BACKUP_PREFIX = "backup:";
 const KV_ADMIN_IDS_KEY = "admin:ids";
+const KV_ADMIN_ROLE_PREFIX = "admin:role:";
 const KV_BANNED_PREFIX = "banned:";
 const KV_BANNED_LIST = "banned:list";
 const KV_SUSPENDED_PREFIX = "suspended:";
+const KV_ERROR_LOG_PREFIX = "error:";
+const KV_ERROR_LOG_LIST = "errors:list";
+const MAX_ERRORS_STORED = 100;
 
 // KV key prefixes  (BOT_STATE)
 const STATE_REG_PREFIX = "reg:";
 const STATE_ADDPANEL_PREFIX = "addpanel:";
 const STATE_RENEW_PREFIX = "reg:renew:";
 
-// 3x-ui API paths — Complete based on official OpenAPI spec
+// 3x-ui API paths
 const API_PATHS = {
-  // Authentication
   LOGIN: "/login",
-  LOGOUT: "/logout",
-  CSRF_TOKEN: "/csrf-token",
-  GET_2FA_ENABLE: "/getTwoFactorEnable",
-
   // Inbounds
   INBOUNDS_LIST: "/panel/api/inbounds/list",
-  INBOUNDS_LIST_SLIM: "/panel/api/inbounds/list/slim",
-  INBOUNDS_OPTIONS: "/panel/api/inbounds/options",
   INBOUNDS_GET: "/panel/api/inbounds/get/",
   INBOUNDS_UPDATE: "/panel/api/inbounds/update/",
   INBOUNDS_ADD: "/panel/api/inbounds/add",
   INBOUNDS_DEL: "/panel/api/inbounds/del/",
-  INBOUNDS_BULK_DEL: "/panel/api/inbounds/bulkDel",
-  INBOUNDS_SET_ENABLE: "/panel/api/inbounds/setEnable/",
-  INBOUNDS_RESET_TRAFFIC: "/panel/api/inbounds/resetAllTraffics",
-  INBOUNDS_RESET_ONE: "/panel/api/inbounds/", // {id}/resetTraffic
-  INBOUNDS_DEL_ALL_CLIENTS: "/panel/api/inbounds/", // {id}/delAllClients
-  INBOUNDS_IMPORT: "/panel/api/inbounds/import",
-  INBOUNDS_FALLBACKS: "/panel/api/inbounds/", // {id}/fallbacks
   INBOUNDS_ONLINE: "/panel/api/inbounds/onlines",
-
+  INBOUNDS_RESET_TRAFFIC: "/panel/api/inbounds/resetAllTraffics",
   // Clients
   CLIENTS_LIST: "/panel/api/clients/list",
-  CLIENTS_LIST_PAGED: "/panel/api/clients/list/paged",
   CLIENTS_GET: "/panel/api/clients/get/",
   CLIENTS_ADD: "/panel/api/clients/add",
   CLIENTS_UPDATE: "/panel/api/clients/update/",
   CLIENTS_DEL: "/panel/api/clients/del/",
-  CLIENTS_RESET_TRAFFIC: "/panel/api/clients/resetTraffic/",
-  CLIENTS_RESET_ALL_TRAFFIC: "/panel/api/clients/resetAllTraffics",
-  CLIENTS_UPDATE_TRAFFIC: "/panel/api/clients/updateTraffic/",
+  CLIENTS_RESET_TRAFFIC: "/panel/api/clients/reset_traffic/",
   CLIENTS_IPS: "/panel/api/clients/ips/",
-  CLIENTS_CLEAR_IPS: "/panel/api/clients/clearIps/",
-  CLIENTS_ONLINES: "/panel/api/clients/onlines",
-  CLIENTS_ONLINES_BY_GUID: "/panel/api/clients/onlinesByGuid",
-  CLIENTS_LAST_ONLINE: "/panel/api/clients/lastOnline",
-  CLIENTS_ACTIVE_INBOUNDS: "/panel/api/clients/activeInbounds",
-  CLIENTS_TRAFFIC: "/panel/api/clients/traffic/",
-  CLIENTS_SUB_LINKS: "/panel/api/clients/subLinks/",
-  CLIENTS_LINKS: "/panel/api/clients/links/",
-  CLIENTS_ATTACH: "/panel/api/clients/", // {email}/attach
-  CLIENTS_DETACH: "/panel/api/clients/", // {email}/detach
-  CLIENTS_EXTERNAL_LINKS: "/panel/api/clients/", // {email}/externalLinks
-  CLIENTS_DEL_DEPLETED: "/panel/api/clients/delDepleted",
-  CLIENTS_DEL_ORPHANS: "/panel/api/clients/delOrphans",
-  CLIENTS_EXPORT: "/panel/api/clients/export",
-  CLIENTS_IMPORT: "/panel/api/clients/import",
-  CLIENTS_BULK_ADJUST: "/panel/api/clients/bulkAdjust",
-  CLIENTS_BULK_ENABLE: "/panel/api/clients/bulkEnable",
-  CLIENTS_BULK_DISABLE: "/panel/api/clients/bulkDisable",
-  CLIENTS_BULK_DEL: "/panel/api/clients/bulkDel",
-  CLIENTS_BULK_CREATE: "/panel/api/clients/bulkCreate",
-  CLIENTS_BULK_ATTACH: "/panel/api/clients/bulkAttach",
-  CLIENTS_BULK_DETACH: "/panel/api/clients/bulkDetach",
-  CLIENTS_BULK_RESET_TRAFFIC: "/panel/api/clients/bulkResetTraffic",
-  CLIENTS_GROUPS: "/panel/api/clients/groups",
-  CLIENTS_GROUPS_CREATE: "/panel/api/clients/groups/create",
-  CLIENTS_GROUPS_RENAME: "/panel/api/clients/groups/rename",
-  CLIENTS_GROUPS_DELETE: "/panel/api/clients/groups/delete",
-  CLIENTS_GROUPS_BULK_ADD: "/panel/api/clients/groups/bulkAdd",
-  CLIENTS_GROUPS_BULK_REMOVE: "/panel/api/clients/groups/bulkRemove",
-
+  CLIENTS_RENEW: "/panel/api/clients/renew/",
+  CLIENT_TRAFFIC: "/panel/api/client/traffic/",
+  CLIENTS_TRAFFICS: "/panel/api/clients/traffics",
   // Nodes
   NODES_LIST: "/panel/api/nodes/list",
-  NODES_GET: "/panel/api/nodes/get/",
   NODES_ADD: "/panel/api/nodes/add",
   NODES_UPDATE: "/panel/api/nodes/update/",
   NODES_DEL: "/panel/api/nodes/del/",
-  NODES_SET_ENABLE: "/panel/api/nodes/setEnable/",
-  NODES_TEST: "/panel/api/nodes/test",
-  NODES_CERT_FINGERPRINT: "/panel/api/nodes/certFingerprint",
-  NODES_INBOUNDS: "/panel/api/nodes/inbounds",
   NODES_PROBE: "/panel/api/nodes/probe/",
-  NODES_UPDATE_PANEL: "/panel/api/nodes/updatePanel",
-  NODES_MTLS_CA: "/panel/api/nodes/mtls/ca",
-  NODES_MTLS_TRUST_CA: "/panel/api/nodes/mtls/trustCA",
-  NODES_WEB_CERT: "/panel/api/nodes/webCert/",
-  NODES_HISTORY: "/panel/api/nodes/history/", // {id}/{metric}/{bucket}
-
+  NODES_SYNC: "/panel/api/nodes/sync/",
   // Hosts
   HOSTS_LIST: "/panel/api/hosts/list",
-  HOSTS_GET: "/panel/api/hosts/get/",
-  HOSTS_BY_INBOUND: "/panel/api/hosts/byInbound/",
-  HOSTS_TAGS: "/panel/api/hosts/tags",
   HOSTS_ADD: "/panel/api/hosts/add",
   HOSTS_UPDATE: "/panel/api/hosts/update/",
   HOSTS_DEL: "/panel/api/hosts/del/",
-  HOSTS_SET_ENABLE: "/panel/api/hosts/setEnable/",
-  HOSTS_REORDER: "/panel/api/hosts/reorder",
-  HOSTS_BULK_SET_ENABLE: "/panel/api/hosts/bulk/setEnable",
-  HOSTS_BULK_DEL: "/panel/api/hosts/bulk/del",
-
-  // Fallbacks (via inbounds)
-  FALLBACKS_LIST: "/panel/api/inbounds/", // {id}/fallbacks
-
+  // Fallbacks
+  FALLBACKS_LIST: "/panel/api/fallbacks/list",
+  FALLBACKS_ADD: "/panel/api/fallbacks/add",
+  FALLBACKS_DEL: "/panel/api/fallbacks/del/",
   // API Tokens
-  API_TOKENS_LIST: "/panel/api/setting/apiTokens",
-  API_TOKENS_CREATE: "/panel/api/setting/apiTokens/create",
-  API_TOKENS_DEL: "/panel/api/setting/apiTokens/delete/",
-  API_TOKENS_SET_ENABLED: "/panel/api/setting/apiTokens/setEnabled/",
-
-  // Outbounds / Xray
-  XRAY_GET_CONFIG: "/panel/api/xray/",
-  XRAY_GET_OUTBOUNDS_TRAFFIC: "/panel/api/xray/getOutboundsTraffic",
-  XRAY_GET_RESULT: "/panel/api/xray/getXrayResult",
-  XRAY_UPDATE: "/panel/api/xray/update",
-  XRAY_RESET_OUTBOUNDS_TRAFFIC: "/panel/api/xray/resetOutboundsTraffic",
-  XRAY_BALANCER_STATUS: "/panel/api/xray/balancerStatus",
-  XRAY_BALANCER_OVERRIDE: "/panel/api/xray/balancerOverride",
-  XRAY_ROUTE_TEST: "/panel/api/xray/routeTest",
-  XRAY_OUTBOUND_SUBS: "/panel/api/xray/outbound-subs",
-  XRAY_TEST_OUTBOUND: "/panel/api/xray/testOutbound",
-  XRAY_TEST_OUTBOUNDS: "/panel/api/xray/testOutbounds",
-  XRAY_DEFAULT_CONFIG: "/panel/api/xray/getDefaultJsonConfig",
-
+  API_TOKENS_LIST: "/panel/api/api-tokens/list",
+  API_TOKENS_ADD: "/panel/api/api-tokens/add",
+  API_TOKENS_UPDATE: "/panel/api/api-tokens/update/",
+  API_TOKENS_DEL: "/panel/api/api-tokens/del/",
+  // Outbounds
+  OUTBOUNDS_LIST: "/panel/api/outbounds/list",
+  OUTBOUNDS_TRAFFICS: "/panel/api/outbounds/traffics",
   // Server
   SERVER_STATUS: "/panel/api/server/status",
-  SERVER_FAIL2BAN: "/panel/api/server/fail2banStatus",
-  SERVER_HISTORY: "/panel/api/server/history/", // {metric}/{bucket}
-  SERVER_CPU_HISTORY: "/panel/api/server/cpuHistory/", // {bucket}
-  SERVER_XRAY_METRICS_STATE: "/panel/api/server/xrayMetricsState",
-  SERVER_XRAY_OBSERVATORY: "/panel/api/server/xrayObservatory",
   SERVER_GET_DB: "/panel/api/server/getDb",
-  SERVER_GET_MIGRATION: "/panel/api/server/getMigration",
-  SERVER_GET_CONFIG_JSON: "/panel/api/server/getConfigJson",
-  SERVER_GET_NEW_UUID: "/panel/api/server/getNewUUID",
-  SERVER_GET_NEW_X25519: "/panel/api/server/getNewX25519Cert",
-  SERVER_GET_WEB_CERT: "/panel/api/server/getWebCertFiles",
-  SERVER_DESCENDANTS: "/panel/api/server/descendants",
   SERVER_STOP_XRAY: "/panel/api/server/stopXrayService",
   SERVER_RESTART_XRAY: "/panel/api/server/restartXrayService",
-  SERVER_INSTALL_XRAY: "/panel/api/server/installXray/",
-  SERVER_UPDATE_PANEL: "/panel/api/server/updatePanel",
-  SERVER_SET_UPDATE_CHANNEL: "/panel/api/server/setUpdateChannel",
-  SERVER_UPDATE_GEOFILE: "/panel/api/server/updateGeofile",
-  SERVER_LOGS: "/panel/api/server/logs/", // {count}
-  SERVER_XRAY_LOGS: "/panel/api/server/xraylogs/", // {count}
-  SERVER_IMPORT_DB: "/panel/api/server/importDB",
-  SERVER_GET_NEW_ECH: "/panel/api/server/getNewEchCert",
-  SERVER_GET_CERT_HASH: "/panel/api/server/getCertHash",
-  SERVER_GET_REMOTE_CERT_HASH: "/panel/api/server/getRemoteCertHash",
-  SERVER_CLIENT_IPS: "/panel/api/server/clientIps",
+  SERVER_RESTART_PANEL: "/panel/api/server/restartPanel",
+  SERVER_GET_LOGS: "/panel/api/server/getLogs",
   SERVER_PANEL_UPDATE: "/panel/api/server/getPanelUpdateInfo",
   SERVER_GET_XRAY_VERSION: "/panel/api/server/getXrayVersion",
-
+  SERVER_UPDATE_XRAY: "/panel/api/server/updateXray/",
+  SERVER_INSTALL_XRAY: "/panel/api/server/installXray/",
   // Settings
   SETTINGS_ALL: "/panel/api/setting/all",
-  SETTINGS_DEFAULT: "/panel/api/setting/defaultSettings",
   SETTINGS_UPDATE: "/panel/api/setting/update",
-  SETTINGS_UPDATE_USER: "/panel/api/setting/updateUser",
-  SETTINGS_RESTART_PANEL: "/panel/api/setting/restartPanel",
-  SETTINGS_TEST_SMTP: "/panel/api/setting/testSmtp",
-  SETTINGS_TEST_TG_BOT: "/panel/api/setting/testTgBot",
-  SETTINGS_DEFAULT_CONFIG: "/panel/api/setting/getDefaultJsonConfig",
-
-  // Backup
-  BACKUP_TO_TG_BOT: "/panel/api/backuptotgbot",
-
+  // Users (panel users)
+  USERS_LIST: "/panel/api/users/list",
+  USERS_ADD: "/panel/api/users/add",
+  USERS_DEL: "/panel/api/users/del/",
   // Database
   DATABASE_BACKUP: "/panel/api/server/getDb",
-  DATABASE_RESTORE: "/panel/api/server/importDB",
+  DATABASE_RESTORE: "/panel/api/server/importDb",
 };
 
 const PANEL_VERSION_PATHS = [
@@ -267,8 +173,689 @@ async function handleFetch(request, env, ctx) {
     return new Response("Not Found", { status: 404 });
   } catch (error) {
     console.error("handleFetch error:", shortError(error));
-    await logError(env, "fetch", error, {});
     return new Response("Internal Server Error", { status: 500 });
+  }
+}
+
+// ─── JSON Response Helper ─────────────────────────────────────
+
+function jsonResponse(data, status = 200, extraHeaders = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: {
+      "Content-Type": "application/json",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+      ...extraHeaders,
+    },
+  });
+}
+
+// ─── Telegram initData Verification ───────────────────────────
+
+async function verifyTelegramInitData(initDataStr, env) {
+  if (!initDataStr || typeof initDataStr !== "string") {
+    console.error("verifyTelegramInitData: empty initData");
+    return null;
+  }
+  try {
+    const botToken = getBotToken(env);
+    if (!botToken) {
+      console.error("verifyTelegramInitData: no bot token");
+      return null;
+    }
+
+    // Parse initData manually to preserve original encoding
+    // initData format: key1=value1&key2=value2&...
+    // Telegram uses %20 for spaces (not +), so we just decode %XX sequences
+    const pairs = initDataStr.split("&");
+    const params = {};
+    let hash = "";
+    for (const pair of pairs) {
+      const eqIdx = pair.indexOf("=");
+      if (eqIdx === -1) continue;
+      const key = pair.slice(0, eqIdx);
+      const value = pair.slice(eqIdx + 1);
+      if (key === "hash") {
+        hash = value;
+      } else {
+        // Decode percent-encoded characters
+        // Telegram uses standard percent-encoding (not application/x-www-form-urlencoded)
+        try {
+          params[key] = decodeURIComponent(value);
+        } catch {
+          // If decoding fails, use raw value
+          params[key] = value;
+        }
+      }
+    }
+
+    if (!hash) {
+      console.error("verifyTelegramInitData: no hash in initData");
+      return null;
+    }
+
+    // Build data-check-string: sorted keys, format key=value (value is URL-decoded)
+    // Telegram expects decoded values in the data-check-string
+    const dataCheckString = Object.keys(params)
+      .sort()
+      .map((key) => `${key}=${params[key]}`)
+      .join("\n");
+
+    // Create secret_key = HMAC-SHA256(key="WebAppData", data=bot_token)
+    const encoder = new TextEncoder();
+    const secretKey = await crypto.subtle.importKey(
+      "raw",
+      encoder.encode("WebAppData"),
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const secretBytes = await crypto.subtle.sign("HMAC", secretKey, encoder.encode(botToken));
+
+    // Create hash = HMAC-SHA256(key=secret_key, data=data_check_string)
+    const hashKey = await crypto.subtle.importKey(
+      "raw",
+      secretBytes,
+      { name: "HMAC", hash: "SHA-256" },
+      false,
+      ["sign"]
+    );
+    const computedHash = await crypto.subtle.sign("HMAC", hashKey, encoder.encode(dataCheckString));
+
+    // Convert to hex
+    const computedHex = [...new Uint8Array(computedHash)]
+      .map((b) => b.toString(16).padStart(2, "0"))
+      .join("");
+
+    if (computedHex !== hash) {
+      console.error("verifyTelegramInitData: hash mismatch");
+      console.error("expected:", hash);
+      console.error("computed:", computedHex);
+      console.error("dataCheckString:", dataCheckString);
+      return null;
+    }
+
+    // Parse user (params.user is already decoded)
+    const userStr = params.user;
+    if (!userStr) {
+      console.error("verifyTelegramInitData: no user in initData");
+      return null;
+    }
+    const user = JSON.parse(userStr);
+    return user;
+  } catch (error) {
+    console.error("verifyTelegramInitData error:", shortError(error));
+    return null;
+  }
+}
+
+// ─── Mini App API Handler ─────────────────────────────────────
+
+async function handleMiniAppApi(request, env, path, method, url) {
+  try {
+    // Handle CORS preflight
+    if (method === "OPTIONS") {
+      return new Response(null, {
+        headers: {
+          "Access-Control-Allow-Origin": "*",
+          "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+          "Access-Control-Allow-Headers": "Content-Type, X-Telegram-Init-Data",
+        },
+      });
+    }
+
+    // Verify Telegram initData
+    // initData can come from header or query param
+    let initData = request.headers.get("X-Telegram-Init-Data") || "";
+
+    // If not in header, try query param (may be URL-encoded)
+    if (!initData) {
+      const queryInitData = url.searchParams.get("initData");
+      if (queryInitData) {
+        // URL.searchParams already decodes, so use the raw value
+        initData = queryInitData;
+      }
+    }
+
+    // Debug endpoint
+    if (path === "/api/app/debug") {
+      return jsonResponse({
+        hasInitData: Boolean(initData),
+        initDataLength: initData.length,
+        initDataPreview: initData ? initData.slice(0, 200) : null,
+        hasUser: initData.includes("user="),
+        hasHash: initData.includes("hash="),
+        hasAuthDate: initData.includes("auth_date="),
+        method,
+      });
+    }
+
+    const user = await verifyTelegramInitData(initData, env);
+    if (!user) {
+      return jsonResponse({
+        error: "Unauthorized",
+        message: "Invalid Telegram initData",
+        debug: {
+          hasInitData: Boolean(initData),
+          initDataLength: initData.length,
+          hint: "Make sure you opened this from Telegram WebApp button",
+        },
+      }, 401);
+    }
+
+    const chatId = String(user.id);
+    const admin = await isAdminAsync(chatId, env);
+
+    // ── Auth check ──
+    if (path === "/api/app/auth") {
+      const registeredUser = await getUser(env, chatId);
+      return jsonResponse({
+        user: {
+          id: user.id,
+          username: user.username || "",
+          firstName: user.first_name || "",
+          lastName: user.last_name || "",
+          photoUrl: user.photo_url || "",
+        },
+        isAdmin: admin,
+        registered: Boolean(registeredUser),
+        clientEmail: registeredUser?.clientEmail || null,
+        panelId: registeredUser?.panelId || null,
+        supportUsername: getSupportUsername(env) || "",
+      });
+    }
+
+    // ── User: My usage ──
+    if (path === "/api/app/my-usage" && method === "GET") {
+      const registeredUser = await getUser(env, chatId);
+      if (!registeredUser) {
+        return jsonResponse({ error: "Not registered" }, 404);
+      }
+      // Use Promise.race with timeout to prevent hanging
+      const client = await Promise.race([
+        getClientByIdentifier(registeredUser.clientEmail, env, registeredUser.panelId),
+        new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout (20s)")), 20000)),
+      ]).catch(() => null);
+      const panel = await resolvePanelAsync(env, registeredUser.panelId);
+      if (!client || !panel) {
+        // Return backup info if panel/client unavailable
+        const backup = await getUserBackup(env, chatId);
+        if (backup) {
+          return jsonResponse({
+            client: {
+              email: backup.clientEmail,
+              totalGB: backup.totalGB,
+              usedGB: backup.usedGB,
+              remainingGB: backup.remainingGB,
+              uploadGB: backup.uploadGB,
+              downloadGB: backup.downloadGB,
+              expiryTime: backup.expiryTime,
+              enabled: backup.enabled,
+              expired: backup.expiryTime ? backup.expiryTime < Date.now() : false,
+              depleted: false,
+            },
+            panel: { id: backup.panelId, name: backup.panelName },
+            subLink: null,
+            fromBackup: true,
+            lastUpdated: backup.lastUpdated,
+          });
+        }
+        return jsonResponse({ error: "Client not found" }, 404);
+      }
+      const traffic = getClientTraffic(client);
+      const totalBytes = getClientTotalBytes(client);
+      const usedBytes = traffic.up + traffic.down;
+
+      // Update user backup
+      try {
+        await updateUserBackup(env, chatId, {
+          email: getIdentifierFromClient(client),
+          panelId: registeredUser.panelId,
+          totalGB: totalBytes > 0 ? totalBytes / BYTES_PER_GB : null,
+          usedGB: usedBytes / BYTES_PER_GB,
+          remainingGB: totalBytes > 0 ? Math.max(0, totalBytes - usedBytes) / BYTES_PER_GB : null,
+          uploadGB: traffic.up / BYTES_PER_GB,
+          downloadGB: traffic.down / BYTES_PER_GB,
+          expiryTime: client.expiryTime > 0 ? Number(client.expiryTime) : null,
+          enabled: isClientEnabled(client),
+          registeredAt: registeredUser.registeredAt,
+        }, panel);
+      } catch { /* ignore backup errors */ }
+
+      return jsonResponse({
+        client: {
+          email: getIdentifierFromClient(client),
+          totalGB: totalBytes > 0 ? totalBytes / BYTES_PER_GB : null,
+          usedGB: usedBytes / BYTES_PER_GB,
+          remainingGB: totalBytes > 0 ? Math.max(0, totalBytes - usedBytes) / BYTES_PER_GB : null,
+          uploadGB: traffic.up / BYTES_PER_GB,
+          downloadGB: traffic.down / BYTES_PER_GB,
+          expiryTime: client.expiryTime > 0 ? Number(client.expiryTime) : null,
+          enabled: isClientEnabled(client),
+          expired: isClientExpired(client),
+          depleted: isClientDepleted(client),
+        },
+        panel: { id: panel.id, name: panel.name },
+        subLink: (client.subId || client.subid) && panel.subBaseUrl
+          ? buildSubLink(client.subId || client.subid, panel)
+          : null,
+      });
+    }
+
+    // ── User: Request renewal ──
+    if (path === "/api/app/request-renewal" && method === "POST") {
+      const registeredUser = await getUser(env, chatId);
+      if (!registeredUser) {
+        return jsonResponse({ error: "Not registered" }, 404);
+      }
+      // Check rate limit
+      const rateLimitKey = `renewal_ratelimit:${chatId}`;
+      const lastRequest = await kvGet(env, rateLimitKey);
+      const now = Date.now();
+      const oneHour = 60 * 60 * 1000;
+      if (lastRequest && lastRequest.timestamp && (now - lastRequest.timestamp) < oneHour) {
+        const remaining = oneHour - (now - lastRequest.timestamp);
+        return jsonResponse({
+          error: "Rate limited",
+          message: `لطفاً ${Math.ceil(remaining / (60 * 1000))} دقیقه دیگر صبر کنید`,
+          retryAfterMinutes: Math.ceil(remaining / (60 * 1000)),
+        }, 429);
+      }
+      const body = await request.json().catch(() => ({}));
+      const days = Number(body.days) || 0;
+      const gb = Number(body.gb) || 0;
+      if (days <= 0 && gb <= 0) {
+        return jsonResponse({ error: "Invalid amount" }, 400);
+      }
+      const requestObj = await createRenewalRequest(env, chatId, registeredUser.clientEmail, registeredUser.panelId, days, gb);
+      await kvPut(env, rateLimitKey, { timestamp: now });
+
+      // Notify admins
+      const adminIds = await getSuperAdminIds(env);
+      const panel = await resolvePanelAsync(env, registeredUser.panelId);
+      const panelName = panel ? panel.name : registeredUser.panelId;
+      const message =
+        `🔄 درخواست تمدید جدید\n\n` +
+        `👤 کاربر: ${registeredUser.clientEmail}\n` +
+        `🖥️ سرور: ${panelName}\n` +
+        `${days ? `📅 روز: +${days}\n` : ""}` +
+        `${gb ? `📦 حجم: +${gb} GB\n` : ""}` +
+        `🕐 زمان: ${new Date().toLocaleString("fa-IR")}`;
+      const btns = [[
+        { text: "✅ تایید", callback_data: `renewal_approve:${requestObj.id}` },
+        { text: "❌ رد", callback_data: `renewal_reject:${requestObj.id}` },
+      ]];
+      for (const adminId of adminIds) {
+        try { await sendTelegram(adminId, message, env, btns); } catch { /* ignore */ }
+      }
+      return jsonResponse({ success: true, requestId: requestObj.id });
+    }
+
+    // ── Admin-only endpoints ──
+    if (!admin) {
+      return jsonResponse({ error: "Forbidden", message: "Admin access required" }, 403);
+    }
+
+    // ── Admin: Panels list ──
+    if (path === "/api/app/panels" && method === "GET") {
+      const panels = await getPanels(env);
+      return jsonResponse({ panels: panels.map((p) => ({ id: p.id, name: p.name, url: p.panelUrl, subBaseUrl: p.subBaseUrl || "" })) });
+    }
+
+    // ── Admin: Server status ──
+    if (path === "/api/app/status" && method === "GET") {
+      const panels = await getPanels(env);
+      // Use Promise.allSettled for parallel requests with timeout
+      const statusPromises = panels.map(async (panel) => {
+        try {
+          const status = await Promise.race([
+            getServerStatus(panel),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout (15s)")), 15000)),
+          ]);
+          const obj = status?.obj || status;
+          return {
+            panelId: panel.id,
+            panelName: panel.name,
+            cpu: Number(obj?.cpu || 0),
+            memCurrent: Number(obj?.mem?.current || 0),
+            memTotal: Number(obj?.mem?.total || 0),
+            diskCurrent: Number(obj?.disk?.current || 0),
+            diskTotal: Number(obj?.disk?.total || 0),
+            uptime: Number(obj?.uptime || 0),
+            xrayRunning: obj?.xray?.running ?? true,
+            xrayVersion: obj?.xray?.version || "",
+          };
+        } catch (error) {
+          return { panelId: panel.id, panelName: panel.name, error: shortError(error) };
+        }
+      });
+      const results = await Promise.allSettled(statusPromises);
+      /** @type {any[]} */
+      const statuses = results.map((r) => {
+        if (r.status === "fulfilled") return r.value;
+        return { error: r.reason?.message || "Unknown" };
+      });
+      return jsonResponse({ statuses });
+    }
+
+    // ── Admin: List clients ──
+    if (path === "/api/app/clients" && method === "GET") {
+      const panelId = url.searchParams.get("panelId");
+      const search = url.searchParams.get("search");
+      const panels = panelId ? [await resolvePanelAsync(env, panelId)].filter(Boolean) : await getPanels(env);
+
+      // Use parallel requests with timeout
+      const clientPromises = panels.map(async (panel) => {
+        try {
+          const clients = search
+            ? (await searchClientAcrossPanels(search, env)).filter((r) => r.panel.id === panel.id).map((r) => r.client)
+            : await Promise.race([
+                listAllClients(panel),
+                new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+              ]);
+          return clients.map((client) => {
+            const traffic = getClientTraffic(client);
+            const totalBytes = getClientTotalBytes(client);
+            const usedBytes = traffic.up + traffic.down;
+            return {
+              panelId: panel.id,
+              panelName: panel.name,
+              email: getIdentifierFromClient(client),
+              totalGB: totalBytes > 0 ? totalBytes / BYTES_PER_GB : null,
+              usedGB: usedBytes / BYTES_PER_GB,
+              uploadGB: traffic.up / BYTES_PER_GB,
+              downloadGB: traffic.down / BYTES_PER_GB,
+              expiryTime: client.expiryTime > 0 ? Number(client.expiryTime) : null,
+              enabled: isClientEnabled(client),
+              expired: isClientExpired(client),
+              depleted: isClientDepleted(client),
+              subId: client.subId || client.subid || "",
+            };
+          });
+        } catch (error) {
+          return [];
+        }
+      });
+      const settledResults = await Promise.allSettled(clientPromises);
+      /** @type {any[]} */
+      const results = settledResults.flatMap((r) => {
+        if (r.status === "fulfilled" && Array.isArray(r.value)) return r.value;
+        return [];
+      });
+      return jsonResponse({ clients: results });
+    }
+
+    // ── Admin: Create client ──
+    if (path === "/api/app/clients/create" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { panelId, email, days, gb } = body;
+      if (!panelId || !email || !days) {
+        return jsonResponse({ error: "Missing required fields" }, 400);
+      }
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) {
+        return jsonResponse({ error: "Panel not found" }, 404);
+      }
+      try {
+        await createClient(panel, email, Number(days), Number(gb) || 0);
+        return jsonResponse({ success: true });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Update client (enable/disable) ──
+    if (path === "/api/app/clients/update" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { panelId, email, enable, addGB, addDays, resetTraffic } = body;
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      const client = await getClientByIdentifier(email, env, panelId);
+      if (!client) return jsonResponse({ error: "Client not found" }, 404);
+      try {
+        if (enable !== undefined) await updateClient(panel, client, { enable: Boolean(enable) });
+        if (addGB) await addGBToClient(panel, client, Number(addGB));
+        if (addDays) await addDaysToClient(panel, client, Number(addDays));
+        if (resetTraffic) await resetClientTraffic(panel, email, env);
+        return jsonResponse({ success: true });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Delete client ──
+    if (path === "/api/app/clients/delete" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { panelId, email } = body;
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      try {
+        await deleteClient(panel, email, env);
+        const user = await findUserByEmail(env, email, panel.id);
+        if (user) await deleteUser(env, user.chatId);
+        return jsonResponse({ success: true });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Outbounds list ──
+    if (path === "/api/app/outbounds" && method === "GET") {
+      const panels = await getPanels(env);
+      const results = [];
+      for (const panel of panels) {
+        try {
+          const outbounds = await Promise.race([
+            listOutbounds(panel),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+          ]);
+          for (const ob of outbounds) {
+            results.push({ panelId: panel.id, panelName: panel.name, tag: ob.tag, protocol: ob.protocol });
+          }
+        } catch (error) {
+          // skip
+        }
+      }
+      return jsonResponse({ outbounds: results });
+    }
+
+    // ── Admin: Outbound traffic ──
+    if (path === "/api/app/outbound-traffic" && method === "GET") {
+      const panels = await getPanels(env);
+      const results = [];
+      for (const panel of panels) {
+        try {
+          const traffics = await Promise.race([
+            getOutboundsTraffic(panel),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+          ]);
+          for (const t of traffics) {
+            results.push({
+              panelId: panel.id,
+              panelName: panel.name,
+              tag: t.tag,
+              up: t.up,
+              down: t.down,
+              total: t.total,
+              usedGB: (t.up + t.down) / BYTES_PER_GB,
+              totalGB: t.total > 0 ? t.total / BYTES_PER_GB : null,
+            });
+          }
+        } catch (error) {
+          // skip
+        }
+      }
+      return jsonResponse({ traffics: results });
+    }
+
+    // ── Admin: API tokens ──
+    if (path === "/api/app/api-tokens" && method === "GET") {
+      const panels = await getPanels(env);
+      const results = [];
+      for (const panel of panels) {
+        try {
+          const tokens = await Promise.race([
+            listApiTokens(panel),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+          ]);
+          for (const token of tokens) {
+            results.push({
+              panelId: panel.id,
+              panelName: panel.name,
+              id: token.id,
+              name: token.name,
+              enabled: token.enabled,
+              tokenPreview: token.token ? token.token.slice(0, 8) + "..." + token.token.slice(-4) : "",
+            });
+          }
+        } catch (error) {
+          // skip
+        }
+      }
+      return jsonResponse({ tokens: results });
+    }
+
+    // ── Admin: Settings ──
+    if (path === "/api/app/settings" && method === "GET") {
+      const panelId = url.searchParams.get("panelId");
+      if (!panelId) return jsonResponse({ error: "panelId required" }, 400);
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      try {
+        const settings = await Promise.race([
+          getAllSettings(panel),
+          new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+        ]);
+        return jsonResponse({ settings: settings || {} });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Online users ──
+    if (path === "/api/app/online" && method === "GET") {
+      const panels = await getPanels(env);
+      const onlinePromises = panels.map(async (panel) => {
+        try {
+          const onlineResponse = await Promise.race([
+            panelApi(panel, API_PATHS.INBOUNDS_ONLINE, "GET"),
+            new Promise((_, reject) => setTimeout(() => reject(new Error("Timeout")), 15000)),
+          ]);
+          const users = extractOnlineUsers(onlineResponse);
+          return { panelId: panel.id, panelName: panel.name, users, count: users.length };
+        } catch (error) {
+          return { panelId: panel.id, panelName: panel.name, users: [], count: 0, error: shortError(error) };
+        }
+      });
+      const results = await Promise.allSettled(onlinePromises);
+      /** @type {any[]} */
+      const panels2 = results.map((r) => {
+        if (r.status === "fulfilled") return r.value;
+        return { users: [], count: 0, error: r.reason?.message || "Unknown" };
+      });
+      const totalCount = panels2.reduce((sum, p) => sum + (p.count || 0), 0);
+      return jsonResponse({ totalCount, panels: panels2 });
+    }
+
+    // ── Admin: Pending renewals ──
+    if (path === "/api/app/renewals" && method === "GET") {
+      const pending = await getPendingRenewals(env);
+      return jsonResponse({ renewals: pending });
+    }
+
+    // ── Admin: Approve/Reject renewal ──
+    if (path === "/api/app/renewals/act" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { requestId, action } = body;
+      const renewalRequest = await getRenewalRequest(env, requestId);
+      if (!renewalRequest || renewalRequest.status !== "pending") {
+        return jsonResponse({ error: "Request not found" }, 404);
+      }
+      if (action === "approve") {
+        try {
+          const panel = await resolvePanelAsync(env, renewalRequest.panelId);
+          const client = await getClientByIdentifier(renewalRequest.clientEmail, env, renewalRequest.panelId);
+          if (panel && client) {
+            if (renewalRequest.daysRequested) await addDaysToClient(panel, client, renewalRequest.daysRequested);
+            if (renewalRequest.gbRequested) await addGBToClient(panel, client, renewalRequest.gbRequested);
+          }
+          await updateRenewalStatus(env, requestId, "approved");
+          try { await sendTelegram(renewalRequest.chatId, "✅ درخواست تمدید شما تایید شد!", env); } catch { /* ignore */ }
+          return jsonResponse({ success: true });
+        } catch (error) {
+          return jsonResponse({ error: shortError(error) }, 500);
+        }
+      } else if (action === "reject") {
+        await updateRenewalStatus(env, requestId, "rejected");
+        try { await sendTelegram(renewalRequest.chatId, "❌ درخواست تمدید شما رد شد.", env); } catch { /* ignore */ }
+        return jsonResponse({ success: true });
+      }
+      return jsonResponse({ error: "Invalid action" }, 400);
+    }
+
+    // ── Admin: Xray restart ──
+    if (path === "/api/app/xray/restart" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { panelId } = body;
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      try {
+        await restartXray(panel);
+        await kvPut(env, `${KV_ALERT_PREFIX}xray:${panelId}`, { timestamp: Date.now(), status: "running" });
+        return jsonResponse({ success: true });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Panel restart ──
+    if (path === "/api/app/panel/restart" && method === "POST") {
+      const body = await request.json().catch(() => ({}));
+      const { panelId } = body;
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      try {
+        await restartPanel(panel);
+        return jsonResponse({ success: true });
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    // ── Admin: Get backup ──
+    if (path === "/api/app/backup" && method === "GET") {
+      const panelId = url.searchParams.get("panelId");
+      const panel = await resolvePanelAsync(env, panelId);
+      if (!panel) return jsonResponse({ error: "Panel not found" }, 404);
+      try {
+        const headers = buildAuthHeaders(panel);
+        const candidates = buildApiUrlCandidates(panel, API_PATHS.SERVER_GET_DB);
+        for (const u of candidates) {
+          try {
+            const resp = await fetch(u, { method: "GET", headers });
+            if (resp.ok) {
+              const buffer = await resp.arrayBuffer();
+              return new Response(buffer, {
+                headers: {
+                  "Content-Type": "application/octet-stream",
+                  "Content-Disposition": `attachment; filename="backup_${slugify(panel.name)}_${new Date().toISOString().slice(0, 10)}.db"`,
+                },
+              });
+            }
+          } catch { /* try next */ }
+        }
+        return jsonResponse({ error: "Backup failed" }, 500);
+      } catch (error) {
+        return jsonResponse({ error: shortError(error) }, 500);
+      }
+    }
+
+    return jsonResponse({ error: "Not found" }, 404);
+  } catch (error) {
+    console.error("handleMiniAppApi error:", shortError(error));
+    return jsonResponse({ error: "Internal server error", message: shortError(error) }, 500);
   }
 }
 
@@ -490,11 +1077,14 @@ const COMMAND_ALIASES = {
   adminadd: ["adminadd"],
   admindel: ["admindel"],
   backup: ["backup", "بکاپ"],
-  ban: ["ban", "مسدود"],
-  unban: ["unban", "رفع_مسدود"],
-  suspend: ["suspend", "تعلیق"],
-  unsuspend: ["unsuspend", "رفع_تعلیق"],
-  bannedlist: ["bannedlist", "banned", "بن_شده‌ها"],
+  ban: ["ban","مسدود"],
+  unban: ["unban","رفع_مسدود"],
+  suspend: ["suspend","تعلیق"],
+  unsuspend: ["unsuspend","رفع_تعلیق"],
+  bannedlist: ["bannedlist","banned"],
+  addadmin: ["addadmin"],
+  removeadmin: ["removeadmin","deladmin"],
+  admins: ["admins","adminlist"],
 };
 
 function parseCommandPayload(text) {
@@ -536,8 +1126,12 @@ async function kvGet(env, key) {
   } catch { return null; }
 }
 
-async function kvPut(env, key, value) {
-  try { await env.BOT_KV.put(key, JSON.stringify(value)); } catch (error) {
+async function kvPut(env, key, value, ttlMs) {
+  try {
+    const opts = {};
+    if (ttlMs && ttlMs > 0) opts.expirationTtl = Math.max(60, Math.floor(ttlMs / 1000));
+    await env.BOT_KV.put(key, JSON.stringify(value), opts);
+  } catch (error) {
     console.error(`KV put error for key ${key}:`, shortError(error));
   }
 }
@@ -623,8 +1217,7 @@ async function makeCallbackData(chatId, action, panel, identifier, env) {
   const raw = `${panel.id}:${identifier}`;
   const direct = safeCallbackData(action, raw);
   if (direct) return direct;
-  // For act: tokens, store identifier WITHOUT panelId prefix (panelId is stored separately)
-  const token = await setAction(chatId, action, identifier, env, panel.id);
+  const token = await setAction(chatId, action, raw, env, panel.id);
   return `act:${token}`;
 }
 
@@ -647,52 +1240,7 @@ async function resolveCallbackData(chatId, data, env) {
 
 // ─── User Management (KV) ────────────────────────────────────
 
-// ─── Ban/Suspend System ──────────────────────────────────────
-
-async function banUser(env, chatId, reason = "") {
-  const banEntry = { chatId: String(chatId), reason, bannedAt: Date.now() };
-  await kvPut(env, `${KV_BANNED_PREFIX}${chatId}`, banEntry);
-  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
-  if (!list.includes(String(chatId))) { list.push(String(chatId)); await kvPut(env, KV_BANNED_LIST, list); }
-}
-
-async function unbanUser(env, chatId) {
-  await kvDelete(env, `${KV_BANNED_PREFIX}${chatId}`);
-  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
-  const newList = list.filter((id) => String(id) !== String(chatId));
-  await kvPut(env, KV_BANNED_LIST, newList);
-}
-
-async function isUserBanned(env, chatId) {
-  const ban = await kvGet(env, `${KV_BANNED_PREFIX}${chatId}`);
-  return ban;
-}
-
-async function getBannedUsers(env) {
-  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
-  const banned = [];
-  for (const id of list) { const b = await kvGet(env, `${KV_BANNED_PREFIX}${id}`); if (b) banned.push(b); }
-  return banned;
-}
-
-async function suspendUser(env, chatId, durationMinutes, reason = "") {
-  const until = Date.now() + durationMinutes * 60 * 1000;
-  const entry = { chatId: String(chatId), reason, until, suspendedAt: Date.now() };
-  await kvPut(env, `${KV_SUSPENDED_PREFIX}${chatId}`, entry, durationMinutes * 60 * 1000);
-}
-
-async function unsuspendUser(env, chatId) {
-  await kvDelete(env, `${KV_SUSPENDED_PREFIX}${chatId}`);
-}
-
-async function isUserSuspended(env, chatId) {
-  const s = await kvGet(env, `${KV_SUSPENDED_PREFIX}${chatId}`);
-  if (!s) return null;
-  if (s.until && s.until < Date.now()) { await kvDelete(env, `${KV_SUSPENDED_PREFIX}${chatId}`); return null; }
-  return s;
-}
-
-async function registerUser(env, chatId, clientEmail, panelId) {
+async function registerUser(env, chatId, clientEmail, panelId, createdBy) {
   const key = `${KV_USERS_PREFIX}${chatId}`;
   const user = {
     chatId: String(chatId),
@@ -701,6 +1249,7 @@ async function registerUser(env, chatId, clientEmail, panelId) {
     registeredAt: Date.now(),
     language: "fa",
     notificationsEnabled: true,
+    createdBy: createdBy || null,
   };
   await kvPut(env, key, user);
   return user;
@@ -740,100 +1289,6 @@ async function getAllUsers(env) {
 
 const KV_USER_BACKUP_PREFIX = "userbackup:";
 const KV_USER_BACKUPS_LIST = "userbackups:list";
-
-// ─── Error Logging (KV) ───────────────────────────────────────
-
-const KV_ERROR_LOG_PREFIX = "error:";
-const KV_ERROR_LOG_LIST = "errors:list";
-const MAX_ERRORS_STORED = 100;
-
-async function logError(env, action, error, context = {}) {
-  const errorMsg = shortError(error);
-  // Always log to console first (visible in Cloudflare Workers logs)
-  console.error(`[BOT_ERROR] action=${action} error=${errorMsg} context=${JSON.stringify(context).slice(0, 200)}`);
-
-  try {
-    const id = generateToken(8);
-    const timestamp = Date.now();
-    const errorEntry = {
-      id,
-      timestamp,
-      time: new Date(timestamp).toLocaleString("fa-IR"),
-      action,
-      error: errorMsg,
-      context: JSON.stringify(context).slice(0, 500),
-    };
-
-    // Direct KV put (bypass kvPut wrapper to avoid silent failure)
-    if (env && env.BOT_KV) {
-      await env.BOT_KV.put(`${KV_ERROR_LOG_PREFIX}${id}`, JSON.stringify(errorEntry));
-
-      // Update list (keep last MAX_ERRORS_STORED)
-      let list = [];
-      try {
-        const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST);
-        if (raw) list = JSON.parse(raw);
-        if (!Array.isArray(list)) list = [];
-      } catch { list = []; }
-
-      list.unshift(id);
-      if (list.length > MAX_ERRORS_STORED) {
-        const toDelete = list.slice(MAX_ERRORS_STORED);
-        for (const oldId of toDelete) {
-          try { await env.BOT_KV.delete(`${KV_ERROR_LOG_PREFIX}${oldId}`); } catch { /* ignore */ }
-        }
-        list.length = MAX_ERRORS_STORED;
-      }
-      await env.BOT_KV.put(KV_ERROR_LOG_LIST, JSON.stringify(list));
-    } else {
-      console.error("[BOT_ERROR] BOT_KV not available, cannot store error in KV");
-    }
-  } catch (e) {
-    console.error("[BOT_ERROR] logError itself failed:", shortError(e));
-  }
-}
-
-async function getErrorLogs(env, limit = 20) {
-  if (!env || !env.BOT_KV) return [];
-  try {
-    const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST);
-    if (!raw) return [];
-    const list = JSON.parse(raw);
-    if (!Array.isArray(list)) return [];
-    const errors = [];
-    for (const id of list.slice(0, limit)) {
-      try {
-        const entryRaw = await env.BOT_KV.get(`${KV_ERROR_LOG_PREFIX}${id}`);
-        if (entryRaw) {
-          const entry = JSON.parse(entryRaw);
-          if (entry) errors.push(entry);
-        }
-      } catch { /* skip */ }
-    }
-    return errors;
-  } catch (e) {
-    console.error("[BOT_ERROR] getErrorLogs failed:", shortError(e));
-    return [];
-  }
-}
-
-async function clearErrorLogs(env) {
-  if (!env || !env.BOT_KV) return;
-  try {
-    const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST);
-    if (raw) {
-      const list = JSON.parse(raw);
-      if (Array.isArray(list)) {
-        for (const id of list) {
-          try { await env.BOT_KV.delete(`${KV_ERROR_LOG_PREFIX}${id}`); } catch { /* ignore */ }
-        }
-      }
-    }
-    await env.BOT_KV.delete(KV_ERROR_LOG_LIST);
-  } catch (e) {
-    console.error("[BOT_ERROR] clearErrorLogs failed:", shortError(e));
-  }
-}
 
 async function updateUserBackup(env, chatId, clientData, panel) {
   const now = Date.now();
@@ -1194,7 +1649,146 @@ async function removeAdminId(env, chatId) {
   const filtered = current.filter((x) => x !== id);
   await kvPut(env, KV_ADMIN_IDS_KEY, filtered);
 }
+// ─── Admin Role System ────────────────────────────────────────
 
+async function getAdminRole(env, chatId) {
+  const id = String(chatId);
+  const envAdmins = getGlobalAdminIds(env);
+  if (envAdmins.includes(id)) return { role: "super", panelIds: [], maxUsers: 0 };
+  try {
+    const role = await kvGet(env, `${KV_ADMIN_ROLE_PREFIX}${id}`);
+    if (role) return role;
+  } catch {}
+  try {
+    const kvAdmins = await kvGet(env, KV_ADMIN_IDS_KEY);
+    if (Array.isArray(kvAdmins) && kvAdmins.includes(id)) return { role: "super", panelIds: [], maxUsers: 0 };
+  } catch {}
+  return null;
+}
+
+async function isSuperAdmin(env, chatId) {
+  const role = await getAdminRole(env, chatId);
+  return role && role.role === "super";
+}
+
+async function getAdminPanelIds(env, chatId) {
+  const role = await getAdminRole(env, chatId);
+  if (!role) return [];
+  if (role.role === "super") { const p = await getPanels(env); return p.map(x=>x.id); }
+  return role.panelIds || [];
+}
+
+async function getAdminCreatedCount(env, chatId) {
+  const keys = await kvList(env, KV_USERS_PREFIX);
+  let count = 0;
+  for (const key of keys) { const u = await kvGet(env, key); if (u && u.createdBy === String(chatId)) count++; }
+  return count;
+}
+
+async function addPanelAdmin(env, chatId, panelIds, maxUsers) {
+  const id = String(chatId);
+  await kvPut(env, `${KV_ADMIN_ROLE_PREFIX}${id}`, { role: "admin", panelIds: panelIds||[], maxUsers: maxUsers||0, createdAt: Date.now() });
+  await addAdminId(env, id);
+}
+
+async function setSuperAdmin(env, chatId) {
+  const id = String(chatId);
+  await kvPut(env, `${KV_ADMIN_ROLE_PREFIX}${id}`, { role: "super", panelIds: [], maxUsers: 0, createdAt: Date.now() });
+  await addAdminId(env, id);
+}
+
+async function removePanelAdmin(env, chatId) {
+  await kvDelete(env, `${KV_ADMIN_ROLE_PREFIX}${String(chatId)}`);
+  await removeAdminId(env, chatId);
+}
+
+async function getAllAdminsWithRoles(env) {
+  const ids = await getAllAdminIdsAsync(env);
+  const result = [];
+  for (const id of ids) {
+    const role = await getAdminRole(env, id);
+    const cnt = await getAdminCreatedCount(env, id);
+    result.push({ chatId: id, role: role?.role||"super", panelIds: role?.panelIds||[], maxUsers: role?.maxUsers||0, createdCount: cnt });
+  }
+  return result;
+}
+
+async function getSuperAdminIds(env) {
+  const ids = await getAllAdminIdsAsync(env);
+  const supers = [];
+  for (const id of ids) { const r = await getAdminRole(env, id); if (!r || r.role === "super") supers.push(id); }
+  return supers;
+}
+
+// ─── Ban/Suspend System ───────────────────────────────────────
+
+async function banUser(env, chatId, reason = "") {
+  await kvPut(env, `${KV_BANNED_PREFIX}${chatId}`, { chatId: String(chatId), reason, bannedAt: Date.now() });
+  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
+  if (!list.includes(String(chatId))) { list.push(String(chatId)); await kvPut(env, KV_BANNED_LIST, list); }
+}
+async function unbanUser(env, chatId) {
+  await kvDelete(env, `${KV_BANNED_PREFIX}${chatId}`);
+  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
+  await kvPut(env, KV_BANNED_LIST, list.filter(id => String(id) !== String(chatId)));
+}
+async function isUserBanned(env, chatId) { return await kvGet(env, `${KV_BANNED_PREFIX}${chatId}`); }
+async function getBannedUsers(env) {
+  const list = (await kvGet(env, KV_BANNED_LIST)) || [];
+  const r = []; for (const id of list) { const b = await kvGet(env, `${KV_BANNED_PREFIX}${id}`); if (b) r.push(b); } return r;
+}
+async function suspendUser(env, chatId, mins, reason = "") {
+  await kvPut(env, `${KV_SUSPENDED_PREFIX}${chatId}`, { chatId: String(chatId), reason, until: Date.now()+mins*60000, suspendedAt: Date.now() }, mins*60000);
+}
+async function unsuspendUser(env, chatId) { await kvDelete(env, `${KV_SUSPENDED_PREFIX}${chatId}`); }
+async function isUserSuspended(env, chatId) {
+  const s = await kvGet(env, `${KV_SUSPENDED_PREFIX}${chatId}`);
+  if (!s) return null;
+  if (s.until && s.until < Date.now()) { await kvDelete(env, `${KV_SUSPENDED_PREFIX}${chatId}`); return null; }
+  return s;
+}
+
+// ─── Error Logging (KV) ───────────────────────────────────────
+
+async function logError(env, action, error, context = {}) {
+  const errorMsg = shortError(error);
+  console.error(`[BOT_ERROR] action=${action} error=${errorMsg}`);
+  try {
+    if (!env || !env.BOT_KV) return;
+    const id = generateToken(8);
+    const ts = Date.now();
+    await env.BOT_KV.put(`${KV_ERROR_LOG_PREFIX}${id}`, JSON.stringify({ id, timestamp: ts, time: new Date(ts).toLocaleString("fa-IR"), action, error: errorMsg, context: JSON.stringify(context).slice(0, 500) }));
+    let list = [];
+    try { const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST); if (raw) { list = JSON.parse(raw); if (!Array.isArray(list)) list = []; } } catch {}
+    list.unshift(id);
+    if (list.length > MAX_ERRORS_STORED) { for (const oldId of list.slice(MAX_ERRORS_STORED)) { try { await env.BOT_KV.delete(`${KV_ERROR_LOG_PREFIX}${oldId}`); } catch {} } list.length = MAX_ERRORS_STORED; }
+    await env.BOT_KV.put(KV_ERROR_LOG_LIST, JSON.stringify(list));
+  } catch (e) { console.error("[BOT_ERROR] logError failed:", shortError(e)); }
+}
+
+async function getErrorLogs(env, limit = 20) {
+  if (!env || !env.BOT_KV) return [];
+  try {
+    const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST);
+    if (!raw) return [];
+    const list = JSON.parse(raw);
+    if (!Array.isArray(list)) return [];
+    const errors = [];
+    for (const id of list.slice(0, limit)) {
+      try { const er = await env.BOT_KV.get(`${KV_ERROR_LOG_PREFIX}${id}`); if (er) { const e = JSON.parse(er); if (e) errors.push(e); } } catch {}
+    }
+    return errors;
+  } catch { return []; }
+}
+
+async function clearErrorLogs(env) {
+  if (!env || !env.BOT_KV) return;
+  try {
+    const raw = await env.BOT_KV.get(KV_ERROR_LOG_LIST);
+    if (raw) { const list = JSON.parse(raw); if (Array.isArray(list)) { for (const id of list) { try { await env.BOT_KV.delete(`${KV_ERROR_LOG_PREFIX}${id}`); } catch {} } } }
+    await env.BOT_KV.delete(KV_ERROR_LOG_LIST);
+  } catch {}
+}
 // ─── Telegram API ─────────────────────────────────────────────
 
 async function sendTelegram(chatId, text, env, buttons = null, parseMode = null) {
@@ -1213,47 +1807,10 @@ async function sendTelegram(chatId, text, env, buttons = null, parseMode = null)
   return assertOk(response, "Telegram sendMessage");
 }
 
-// Build a Web App button that opens the mini app
-function buildWebAppButton(text, env) {
-  const url = getWorkerUrl(env);
-  if (!url) return null; // No web app URL configured
-  /** @type {any} */
-  const button = {
-    text,
-    web_app: { url: `${url}/app` },
-  };
-  return button;
-}
-
-// Set the worker URL (can be configured via env)
-function getWorkerUrl(env) {
-  return trimUrl(env?.WORKER_URL || env?.APP_URL || "");
-}
-
 // Get support username from env
 function getSupportUsername(env) {
   const username = String(env?.SUPPORT_USERNAME || env?.SUPPORT_ID || "").trim();
   return username.replace(/^@/, "");
-}
-
-// Set Telegram bot menu button to open mini app (optional)
-async function setBotMenuButton(env) {
-  const url = getWorkerUrl(env);
-  if (!url) return;
-  try {
-    const token = getBotToken(env);
-    await fetch(`https://api.telegram.org/bot${token}/setChatMenuButton`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        menu_button: {
-          type: "web_app",
-          text: "📱 مدیریت",
-          web_app: { url: `${url}/app` },
-        },
-      }),
-    });
-  } catch { /* ignore */ }
 }
 
 async function editMessage(chatId, messageId, text, env, buttons = null) {
@@ -1401,9 +1958,7 @@ async function panelApi(panel, path, method, body = null) {
   const debug = String(panel.apiDebug || "").toLowerCase() === "true";
   const headers = buildAuthHeaders(panel);
 
-  // Only set Content-Type for JSON bodies, not FormData
-  const isFormData = typeof FormData !== "undefined" && body instanceof FormData;
-  if ((body !== null || methodUpper === "POST") && !isFormData) {
+  if (body !== null || methodUpper === "POST") {
     headers["Content-Type"] = "application/json";
   }
 
@@ -1413,9 +1968,7 @@ async function panelApi(panel, path, method, body = null) {
   for (const url of candidates) {
     /** @type {RequestInit} */
     const options = { method: methodUpper, headers };
-    if (body !== null) {
-      options.body = isFormData ? body : JSON.stringify(body);
-    }
+    if (body !== null) options.body = JSON.stringify(body);
 
     if (debug) console.error(`[API TRY] ${panel.name} ${methodUpper} ${url}`);
 
@@ -1588,40 +2141,32 @@ function getFirstTrafficValue(obj, keys) {
 }
 
 function getClientTraffic(client) {
-  if (!client || typeof client !== "object") return { up: 0, down: 0, lastOnline: 0 };
+  if (!client || typeof client !== "object") return { up: 0, down: 0 };
   const upKeys = ["up", "upload", "sent", "tx", "trafficUp"];
   const downKeys = ["down", "download", "recv", "rx", "trafficDown"];
 
   const directUp = getFirstTrafficValue(client, upKeys);
   const directDown = getFirstTrafficValue(client, downKeys);
-  const directLastOnline = Number(client.lastOnline || 0);
-  if (directUp > 0 || directDown > 0) {
-    return { up: directUp, down: directDown, lastOnline: directLastOnline };
-  }
+  if (directUp > 0 || directDown > 0) return { up: directUp, down: directDown };
 
   for (const key of ["clientStats", "client_stats", "stats", "traffic", "trafficStats", "traffic_stats"]) {
     const nested = client[key];
     if (Array.isArray(nested)) {
       const matched = nested.filter((item) => clientMatches(item, getIdentifierFromClient(client)));
-      let up = 0, down = 0, lastOnline = 0;
+      let up = 0, down = 0;
       for (const item of matched) {
         up += getFirstTrafficValue(item, upKeys);
         down += getFirstTrafficValue(item, downKeys);
-        const lo = Number(item.lastOnline || 0);
-        if (lo > lastOnline) lastOnline = lo;
       }
-      if (up > 0 || down > 0) return { up, down, lastOnline };
+      if (up > 0 || down > 0) return { up, down };
     }
     if (nested && typeof nested === "object" && !Array.isArray(nested)) {
       const up = getFirstTrafficValue(nested, upKeys);
       const down = getFirstTrafficValue(nested, downKeys);
-      if (up > 0 || down > 0) {
-        const lo = Number(nested.lastOnline || 0);
-        return { up, down, lastOnline: lo };
-      }
+      if (up > 0 || down > 0) return { up, down };
     }
   }
-  return { up: 0, down: 0, lastOnline: 0 };
+  return { up: 0, down: 0 };
 }
 
 function getClientTotalBytes(client) {
@@ -1776,39 +2321,8 @@ async function getClientByIdentifier(identifier, env, panelId) {
 async function enrichClientTraffic(client, panel) {
   const identifier = getIdentifierFromClient(client);
 
-  // Strategy 1: Use dedicated /panel/api/clients/traffic/{email} endpoint
-  try {
-    const trafficResponse = await panelApi(panel, `${API_PATHS.CLIENTS_TRAFFIC}${encodeURIComponent(identifier)}`, "GET");
-    if (trafficResponse) {
-      const trafficObj = trafficResponse?.obj || trafficResponse;
-      // ClientTraffic schema: up, down, total, expiryTime, enable, email, uuid
-      if (trafficObj && typeof trafficObj === "object" && !Array.isArray(trafficObj)) {
-        const up = Number(trafficObj.up || 0);
-        const down = Number(trafficObj.down || 0);
-        if (up > 0 || down > 0) {
-          client.up = up;
-          client.down = down;
-          // Also update total and expiry from traffic record if available
-          if (trafficObj.total && trafficObj.total > 0) {
-            // Only set if client doesn't have totalGB already
-            const hasExplicitTotal = client.totalGB !== undefined || client.total !== undefined;
-            if (!hasExplicitTotal) client.total = Number(trafficObj.total);
-          }
-          if (trafficObj.expiryTime && trafficObj.expiryTime > 0 && client.expiryTime === undefined) {
-            client.expiryTime = Number(trafficObj.expiryTime);
-          }
-          if (trafficObj.enable !== undefined && client.enable === undefined) {
-            client.enable = trafficObj.enable;
-          }
-          return;
-        }
-      }
-    }
-  } catch (error) {
-    console.error(`enrichClientTraffic traffic endpoint error for ${panel.name}:`, shortError(error));
-  }
-
-  // Strategy 2: Fetch inbound list and extract traffic from clientStats
+  // Always try to fetch fresh traffic data from inbound list
+  // This is the most reliable source in all 3x-ui versions
   try {
     const inboundsResponse = await panelApi(panel, API_PATHS.INBOUNDS_LIST, "GET");
     const trafficAndTotal = findTrafficInInbounds(inboundsResponse, identifier);
@@ -1816,18 +2330,47 @@ async function enrichClientTraffic(client, panel) {
       client.up = trafficAndTotal.up;
       client.down = trafficAndTotal.down;
     }
+    // Also merge total traffic limit from clientStats if client doesn't have a positive total
+    // Note: totalGB = 0 means unlimited, so only set if client has no total at all
     const hasExplicitTotal = client.totalGB !== undefined || client.total !== undefined;
     if (trafficAndTotal.total > 0 && !hasExplicitTotal) {
       client.total = trafficAndTotal.total;
     }
+    // Also merge expiryTime from clientStats if client doesn't have it
+    // Note: expiryTime = 0 means unlimited, so only set if undefined
     if (trafficAndTotal.expiryTime > 0 && client.expiryTime === undefined) {
       client.expiryTime = trafficAndTotal.expiryTime;
     }
+    // Also merge enable status from clientStats
     if (trafficAndTotal.enable !== undefined && client.enable === undefined) {
       client.enable = trafficAndTotal.enable;
     }
   } catch (error) {
     console.error(`enrichClientTraffic inbound list error for ${panel.name}:`, shortError(error));
+  }
+
+  // Fallback: Try dedicated traffic API endpoint
+  const existingTraffic = getClientTraffic(client);
+  if (existingTraffic.up === 0 && existingTraffic.down === 0) {
+    try {
+      const trafficData = await panelApi(panel, `${API_PATHS.CLIENT_TRAFFIC}${encodeURIComponent(identifier)}`, "GET");
+      if (trafficData) {
+        const flat = flattenCandidates(trafficData);
+        let totalUp = 0, totalDown = 0;
+        for (const item of flat) {
+          if (item && typeof item === "object") {
+            const up = Number(item.up || item.upload || item.sent || 0);
+            const down = Number(item.down || item.download || item.recv || 0);
+            if (up > 0) totalUp += up;
+            if (down > 0) totalDown += down;
+          }
+        }
+        if (totalUp > 0 || totalDown > 0) {
+          client.up = totalUp;
+          client.down = totalDown;
+        }
+      }
+    } catch { /* Traffic API not available */ }
   }
 }
 
@@ -2068,7 +2611,7 @@ async function createClient(panel, identifier, days, gb, options = {}) {
     limitIp: Number(options.limitIp) || 0,
     tgId: options.tgId || 0,
     reset: 0,
-    comment: options.comment || "Telegram Bot",
+    comment: options.adminChatId ? `TG:${options.adminChatId}` : (options.comment || "Telegram Bot"),
     flow: options.flow || "",
     group: options.group || "",
     security: options.security || "",
@@ -2136,18 +2679,34 @@ async function deleteClient(panel, identifier, env) {
   const email = normalizeIdentifier(identifier);
   if (!email) throw new Error("شناسه کاربر خالی است");
 
-  // API: POST /panel/api/clients/del/{email} — same as original code
-  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_DEL}${encodeURIComponent(email)}`, "POST");
-  if (direct.ok) return direct.response;
-
-  // Fallback: delete via inbound settings (same as original code)
-  let lastError = direct.error;
-  let inboundIds = await findClientInboundIds(panel, email);
-  if (!inboundIds.length) {
-    inboundIds = await getPanelInboundIds(panel);
+  // Find the client first to get its UUID
+  let uuid = email;
+  if (env) {
+    try {
+      const client = await getClientByIdentifier(email, env, panel.id || "");
+      if (client) {
+        uuid = client.id || client.uuid || client.clientId || email;
+      }
+    } catch { /* ignore, use email */ }
   }
 
-  for (const inboundId of inboundIds) {
+  // Try v3.x clients API with UUID
+  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_DEL}${encodeURIComponent(uuid)}`, "POST");
+  if (direct.ok) return direct.response;
+
+  // Try with email as fallback
+  const directEmail = await tryPanelApi(panel, `${API_PATHS.CLIENTS_DEL}${encodeURIComponent(email)}`, "POST");
+  if (directEmail.ok) return directEmail.response;
+
+  // Try POST body with uuids
+  const directBody = await tryPanelApi(panel, API_PATHS.CLIENTS_DEL, "POST", { uuids: uuid });
+  if (directBody.ok) return directBody.response;
+
+  let lastError = null;
+  const inboundIds = await findClientInboundIds(panel, email);
+  const fallbackIds = inboundIds.length ? inboundIds : await getPanelInboundIds(panel);
+
+  for (const inboundId of fallbackIds) {
     try {
       const inbound = await getInboundById(panel, inboundId);
       if (!inbound) continue;
@@ -2157,65 +2716,65 @@ async function deleteClient(panel, identifier, env) {
     } catch (error) { lastError = error; }
   }
 
-  throw lastError || new Error("حذف کاربر ناموفق بود");
+  throw lastError || new Error("Client delete failed");
 }
 
 async function resetClientTraffic(panel, identifier, env) {
   const email = normalizeIdentifier(identifier);
   if (!email) throw new Error("شناسه کاربر خالی است");
 
-  // Try reset_traffic endpoint with email
-  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_RESET_TRAFFIC}${encodeURIComponent(email)}`, "POST");
-  if (direct.ok) return direct.response;
-
-  // Try with UUID if available
+  // Find the client first to get its UUID
+  let uuid = email;
   if (env) {
     try {
       const client = await getClientByIdentifier(email, env, panel.id || "");
       if (client) {
-        const uuid = client.id || client.uuid || client.clientId || "";
-        if (uuid && uuid !== email) {
-          const directUuid = await tryPanelApi(panel, `${API_PATHS.CLIENTS_RESET_TRAFFIC}${encodeURIComponent(uuid)}`, "POST");
-          if (directUuid.ok) return directUuid.response;
-        }
+        uuid = client.id || client.uuid || client.clientId || email;
       }
     } catch { /* ignore */ }
   }
 
-  throw direct.error || new Error("Reset traffic failed");
+  // Try reset_traffic endpoint with UUID
+  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_RESET_TRAFFIC}${encodeURIComponent(uuid)}`, "POST");
+  if (direct.ok) return direct.response;
+
+  // Try with email
+  const directEmail = await tryPanelApi(panel, `${API_PATHS.CLIENTS_RESET_TRAFFIC}${encodeURIComponent(email)}`, "POST");
+  if (directEmail.ok) return directEmail.response;
+
+  throw direct.error || directEmail.error || new Error("Reset traffic failed");
 }
 
 async function getClientIps(panel, identifier, env) {
   const email = normalizeIdentifier(identifier);
   if (!email) throw new Error("شناسه کاربر خالی است");
 
-  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_IPS}${encodeURIComponent(email)}`, "POST");
-  if (direct.ok) return direct.response;
-
-  // Try with UUID if available
+  let uuid = email;
   if (env) {
     try {
       const client = await getClientByIdentifier(email, env, panel.id || "");
       if (client) {
-        const uuid = client.id || client.uuid || client.clientId || "";
-        if (uuid && uuid !== email) {
-          const directUuid = await tryPanelApi(panel, `${API_PATHS.CLIENTS_IPS}${encodeURIComponent(uuid)}`, "POST");
-          if (directUuid.ok) return directUuid.response;
-        }
+        uuid = client.id || client.uuid || client.clientId || email;
       }
     } catch { /* ignore */ }
   }
 
-  throw direct.error || new Error("Get client IPs failed");
+  const direct = await tryPanelApi(panel, `${API_PATHS.CLIENTS_IPS}${encodeURIComponent(uuid)}`, "GET");
+  if (direct.ok) return direct.response;
+
+  const directEmail = await tryPanelApi(panel, `${API_PATHS.CLIENTS_IPS}${encodeURIComponent(email)}`, "GET");
+  if (directEmail.ok) return directEmail.response;
+
+  throw direct.error || directEmail.error || new Error("Get client IPs failed");
 }
 
 async function restartPanel(panel) {
-  return await panelApi(panel, API_PATHS.SETTINGS_RESTART_PANEL, "POST");
+  return await panelApi(panel, API_PATHS.SERVER_RESTART_PANEL, "POST");
 }
 
 async function getServerLogs(panel) {
   try {
-    return await panelApi(panel, `${API_PATHS.SERVER_LOGS}50`, "POST");
+    return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "GET");
   } catch { return null; }
 }
 
@@ -2296,7 +2855,7 @@ async function listApiTokens(panel) {
 }
 
 async function addApiToken(panel, tokenData) {
-  return await panelApi(panel, API_PATHS.API_TOKENS_CREATE, "POST", tokenData);
+  return await panelApi(panel, API_PATHS.API_TOKENS_ADD, "POST", tokenData);
 }
 
 async function deleteApiToken(panel, tokenId) {
@@ -2328,8 +2887,7 @@ function extractApiTokensFromResponse(response) {
 // ─── Hosts Management ─────────────────────────────────────────
 
 async function listHosts(panel, inboundId) {
-  // Use /hosts/byInbound/{id} for specific inbound, /hosts/list for all
-  const url = inboundId ? `${API_PATHS.HOSTS_BY_INBOUND}${encodeURIComponent(inboundId)}` : API_PATHS.HOSTS_LIST;
+  const url = inboundId ? `${API_PATHS.HOSTS_LIST}?inboundId=${encodeURIComponent(inboundId)}` : API_PATHS.HOSTS_LIST;
   const response = await panelApi(panel, url, "GET");
   return extractHostsFromResponse(response);
 }
@@ -2374,15 +2932,15 @@ function extractHostsFromResponse(response) {
 // ─── Fallbacks Management ─────────────────────────────────────
 
 async function listFallbacks(panel, inboundId) {
-  if (!inboundId) return []; // Fallbacks require an inbound ID
-  const url = `${API_PATHS.INBOUNDS_FALLBACKS}${encodeURIComponent(inboundId)}/fallbacks`;
+  const url = inboundId ? `${API_PATHS.FALLBACKS_LIST}?inboundId=${encodeURIComponent(inboundId)}` : API_PATHS.FALLBACKS_LIST;
   const response = await panelApi(panel, url, "GET");
   return extractFallbacksFromResponse(response);
 }
 
 async function deleteFallback(panel, fallbackId) {
-  // Fallbacks are managed via inbound update, not direct delete
-  throw new Error("Fallback delete not supported via API");
+  const direct = await tryPanelApi(panel, `${API_PATHS.FALLBACKS_DEL}${encodeURIComponent(fallbackId)}`, "POST");
+  if (direct.ok) return direct.response;
+  throw direct.error || new Error("Delete fallback failed");
 }
 
 function extractFallbacksFromResponse(response) {
@@ -2412,12 +2970,12 @@ function extractFallbacksFromResponse(response) {
 // ─── Outbounds Management ─────────────────────────────────────
 
 async function listOutbounds(panel) {
-  const response = await panelApi(panel, API_PATHS.XRAY_GET_CONFIG, "POST");
+  const response = await panelApi(panel, API_PATHS.OUTBOUNDS_LIST, "GET");
   return extractOutboundsFromResponse(response);
 }
 
 async function getOutboundsTraffic(panel) {
-  const response = await panelApi(panel, API_PATHS.XRAY_GET_OUTBOUNDS_TRAFFIC, "GET");
+  const response = await panelApi(panel, API_PATHS.OUTBOUNDS_TRAFFICS, "GET");
   return extractOutboundTrafficsFromResponse(response);
 }
 
@@ -2461,7 +3019,7 @@ function extractOutboundTrafficsFromResponse(response) {
 // ─── Settings Management ──────────────────────────────────────
 
 async function getAllSettings(panel) {
-  const response = await panelApi(panel, API_PATHS.SETTINGS_ALL, "POST");
+  const response = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
   return response?.obj || response || null;
 }
 
@@ -2472,16 +3030,18 @@ async function updateSetting(panel, key, value) {
 // ─── Panel Users Management ───────────────────────────────────
 
 async function listPanelUsers(panel) {
-  // Panel users are managed via settings, not a separate users API
-  return [];
+  const response = await panelApi(panel, API_PATHS.USERS_LIST, "GET");
+  return extractPanelUsersFromResponse(response);
 }
 
 async function addPanelUser(panel, userData) {
-  throw new Error("Panel user management not supported via API");
+  return await panelApi(panel, API_PATHS.USERS_ADD, "POST", userData);
 }
 
 async function deletePanelUser(panel, userId) {
-  throw new Error("Panel user deletion not supported via API");
+  const direct = await tryPanelApi(panel, `${API_PATHS.USERS_DEL}${encodeURIComponent(userId)}`, "POST");
+  if (direct.ok) return direct.response;
+  throw direct.error || new Error("Delete panel user failed");
 }
 
 function extractPanelUsersFromResponse(response) {
@@ -2510,203 +3070,6 @@ async function restoreDatabase(panel, dbBuffer) {
   return await panelApi(panel, API_PATHS.DATABASE_RESTORE, "POST", formData);
 }
 
-// ─── Advanced Client Operations ───────────────────────────────
-
-async function bulkAdjustClients(panel, emails, addDays, addBytes, flow) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_ADJUST, "POST", {
-    emails, addDays: addDays || 0, addBytes: addBytes || 0, flow: flow || "",
-  });
-}
-
-async function bulkEnableClients(panel, emails) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_ENABLE, "POST", { emails });
-}
-
-async function bulkDisableClients(panel, emails) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_DISABLE, "POST", { emails });
-}
-
-async function bulkDeleteClients(panel, emails, keepTraffic = false) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_DEL, "POST", { emails, keepTraffic });
-}
-
-async function bulkCreateClients(panel, clients) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_CREATE, "POST", clients);
-}
-
-async function bulkResetTraffic(panel, emails) {
-  return await panelApi(panel, API_PATHS.CLIENTS_BULK_RESET_TRAFFIC, "POST", { emails });
-}
-
-async function deleteDepletedClients(panel) {
-  return await panelApi(panel, API_PATHS.CLIENTS_DEL_DEPLETED, "POST");
-}
-
-async function deleteOrphanClients(panel) {
-  return await panelApi(panel, API_PATHS.CLIENTS_DEL_ORPHANS, "POST");
-}
-
-async function exportClients(panel) {
-  return await panelApi(panel, API_PATHS.CLIENTS_EXPORT, "GET");
-}
-
-async function importClients(panel, data) {
-  return await panelApi(panel, API_PATHS.CLIENTS_IMPORT, "POST", { data });
-}
-
-async function attachClientToInbound(panel, email, inboundIds) {
-  return await panelApi(panel, `${API_PATHS.CLIENTS_ATTACH}${encodeURIComponent(email)}/attach`, "POST", { inboundIds });
-}
-
-async function detachClientFromInbound(panel, email, inboundIds) {
-  return await panelApi(panel, `${API_PATHS.CLIENTS_DETACH}${encodeURIComponent(email)}/detach`, "POST", { inboundIds });
-}
-
-async function getClientLinks(panel, email) {
-  return await panelApi(panel, `${API_PATHS.CLIENTS_LINKS}${encodeURIComponent(email)}`, "GET");
-}
-
-async function getClientSubLinks(panel, subId) {
-  return await panelApi(panel, `${API_PATHS.CLIENTS_SUB_LINKS}${encodeURIComponent(subId)}`, "GET");
-}
-
-async function clearClientIps(panel, email) {
-  return await panelApi(panel, `${API_PATHS.CLIENTS_CLEAR_IPS}${encodeURIComponent(email)}`, "POST");
-}
-
-// ─── Client Groups ────────────────────────────────────────────
-
-async function listClientGroups(panel) {
-  return await panelApi(panel, API_PATHS.CLIENTS_GROUPS, "GET");
-}
-
-async function createClientGroup(panel, name) {
-  return await panelApi(panel, API_PATHS.CLIENTS_GROUPS_CREATE, "POST", { name });
-}
-
-async function renameClientGroup(panel, oldName, newName) {
-  return await panelApi(panel, API_PATHS.CLIENTS_GROUPS_RENAME, "POST", { oldName, newName });
-}
-
-async function deleteClientGroup(panel, name) {
-  return await panelApi(panel, API_PATHS.CLIENTS_GROUPS_DELETE, "POST", { name });
-}
-
-// ─── Server Advanced ──────────────────────────────────────────
-
-async function getServerHistory(panel, metric, bucket) {
-  // Try different bucket formats: 1m, 5m, 15m, 30m, 1h, 2h, 6h
-  // Some panels use numeric seconds, some use string buckets
-  const buckets = bucket ? [bucket] : ["1m", "5m", "15m", "30m", "1h", "2h", "6h"];
-  for (const b of buckets) {
-    try {
-      const response = await tryPanelApi(panel, `${API_PATHS.SERVER_HISTORY}${encodeURIComponent(metric)}/${encodeURIComponent(b)}`, "GET");
-      if (response.ok) return response.response;
-    } catch { /* try next */ }
-  }
-  return null;
-}
-
-async function getXrayObservatory(panel) {
-  return await panelApi(panel, API_PATHS.SERVER_XRAY_OBSERVATORY, "GET");
-}
-
-async function getXrayResult(panel) {
-  return await panelApi(panel, API_PATHS.XRAY_GET_RESULT, "GET");
-}
-
-async function getConfigJson(panel) {
-  return await panelApi(panel, API_PATHS.SERVER_GET_CONFIG_JSON, "GET");
-}
-
-async function generateUUID(panel) {
-  const response = await panelApi(panel, API_PATHS.SERVER_GET_NEW_UUID, "GET");
-  return response?.obj || response || "";
-}
-
-async function updateGeoFile(panel, fileName) {
-  const url = fileName ? `${API_PATHS.SERVER_UPDATE_GEOFILE}/${encodeURIComponent(fileName)}` : API_PATHS.SERVER_UPDATE_GEOFILE;
-  return await panelApi(panel, url, "POST");
-}
-
-async function getXrayLogs(panel, count = 50) {
-  return await panelApi(panel, `${API_PATHS.SERVER_XRAY_LOGS}${count}`, "POST");
-}
-
-// ─── Node Advanced ────────────────────────────────────────────
-
-async function testNode(panel, nodeData) {
-  return await panelApi(panel, API_PATHS.NODES_TEST, "POST", nodeData);
-}
-
-async function probeNode(panel, nodeId) {
-  return await panelApi(panel, `${API_PATHS.NODES_PROBE}${encodeURIComponent(nodeId)}`, "POST");
-}
-
-async function setNodeEnable(panel, nodeId, enable) {
-  return await panelApi(panel, `${API_PATHS.NODES_SET_ENABLE}${encodeURIComponent(nodeId)}`, "POST", { enable });
-}
-
-async function updateNodesPanel(panel, nodeIds, dev = false) {
-  return await panelApi(panel, API_PATHS.NODES_UPDATE_PANEL, "POST", { ids: nodeIds, dev });
-}
-
-// ─── Host Advanced ────────────────────────────────────────────
-
-async function setHostEnable(panel, hostId, enable) {
-  return await panelApi(panel, `${API_PATHS.HOSTS_SET_ENABLE}${encodeURIComponent(hostId)}`, "POST", { enable });
-}
-
-async function reorderHosts(panel, ids) {
-  return await panelApi(panel, API_PATHS.HOSTS_REORDER, "POST", { ids });
-}
-
-// ─── Settings Advanced ────────────────────────────────────────
-
-async function updatePanelUser(panel, username, password, currentUsername, currentPassword) {
-  return await panelApi(panel, API_PATHS.SETTINGS_UPDATE_USER, "POST", {
-    username, password, currentUsername, currentPassword,
-  });
-}
-
-async function testSmtp(panel) {
-  return await panelApi(panel, API_PATHS.SETTINGS_TEST_SMTP, "POST");
-}
-
-async function testTgBot(panel) {
-  return await panelApi(panel, API_PATHS.SETTINGS_TEST_TG_BOT, "POST");
-}
-
-async function setUpdateChannel(panel, dev = false) {
-  return await panelApi(panel, API_PATHS.SERVER_SET_UPDATE_CHANNEL, "POST", { dev });
-}
-
-// ─── Xray Advanced ────────────────────────────────────────────
-
-async function getXrayConfig(panel) {
-  return await panelApi(panel, API_PATHS.XRAY_GET_CONFIG, "POST");
-}
-
-async function updateXrayConfig(panel, config) {
-  return await panelApi(panel, API_PATHS.XRAY_UPDATE, "POST", { xrayTemplateConfig: config });
-}
-
-async function resetOutboundTraffic(panel, tag) {
-  return await panelApi(panel, API_PATHS.XRAY_RESET_OUTBOUNDS_TRAFFIC, "POST", { tag });
-}
-
-async function getBalancerStatus(panel) {
-  return await panelApi(panel, API_PATHS.XRAY_BALANCER_STATUS, "POST");
-}
-
-async function testOutbound(panel, outbound, allOutbounds, mode) {
-  return await panelApi(panel, API_PATHS.XRAY_TEST_OUTBOUND, "POST", { outbound, allOutbounds, mode });
-}
-
-async function testRoute(panel, target) {
-  return await panelApi(panel, API_PATHS.XRAY_ROUTE_TEST, "POST", { target });
-}
-
 async function addDaysToClient(panel, client, days) {
   const currentExpiry = Number(client.expiryTime ?? 0);
   const expiryTime = currentExpiry > Date.now() ? currentExpiry + days * MS_PER_DAY : Date.now() + days * MS_PER_DAY;
@@ -2727,33 +3090,11 @@ async function getServerStatus(panel) {
 }
 
 async function getPanelVersion(panel) {
-  // Try getPanelUpdateInfo first - returns {currentVersion, latestVersion, ...}
-  try {
-    const result = await panelApi(panel, API_PATHS.SERVER_PANEL_UPDATE, "GET");
-    const obj = result?.obj || result;
-    if (obj) {
-      const ver = obj.currentVersion || obj.version || obj.installedVersion;
-      if (ver) return String(ver);
-    }
-  } catch { /* try next */ }
-
-  // Try settings - panel version might be embedded
-  try {
-    const settings = await getAllSettings(panel);
-    if (settings) {
-      const ver = settings.panelVersion || settings.version;
-      if (ver) return String(ver);
-    }
-  } catch { /* try next */ }
-
-  // Try other paths
   for (const item of PANEL_VERSION_PATHS) {
     try {
       const result = await panelApi(panel, item.path, item.method);
       if (result && typeof result === "object") {
-        const obj = result?.obj || result;
-        const ver = obj.currentVersion || obj.version || obj.installedVersion || obj.panelVersion;
-        if (ver) return String(ver);
+        return result.version || result.obj?.version || result.currentVersion || String(result);
       }
     } catch { /* try next */ }
   }
@@ -2761,21 +3102,11 @@ async function getPanelVersion(panel) {
 }
 
 async function getXrayVersion(panel) {
-  // First try server status which has xray version in obj.xray.version
-  try {
-    const status = await getServerStatus(panel);
-    const obj = status?.obj || status;
-    if (obj?.xray?.version) return obj.xray.version;
-  } catch { /* try next */ }
-
-  // Try getXrayVersion endpoint
   for (const item of XRAY_VERSION_PATHS) {
-    if (item.path === "/panel/api/server/status") continue; // already tried
     try {
       const result = await panelApi(panel, item.path, item.method);
       if (result && typeof result === "object") {
-        const ver = result.obj?.xray?.version || result.xrayVersion || result.version;
-        if (ver) return ver;
+        return result.obj?.xray?.version || result.xrayVersion || result.version || null;
       }
     } catch { /* try next */ }
   }
@@ -2792,9 +3123,13 @@ async function stopXray(panel) {
 
 async function updateXray(panel, version) {
   try {
-    return await panelApi(panel, `${API_PATHS.SERVER_INSTALL_XRAY}${encodeURIComponent(version)}`, "POST");
+    return await panelApi(panel, `/panel/api/server/updateXray/${encodeURIComponent(version)}`, "POST");
   } catch {
-    throw new Error("Xray update failed");
+    try {
+      return await panelApi(panel, "/panel/api/server/installXray/", "POST", { version });
+    } catch {
+      throw new Error("Xray update failed");
+    }
   }
 }
 
@@ -2803,7 +3138,7 @@ async function updatePanel(panel) {
     return await panelApi(panel, "/panel/api/server/updatePanel", "POST");
   } catch {
     try {
-      return await panelApi(panel, API_PATHS.SERVER_UPDATE_PANEL, "POST");
+      return await panelApi(panel, API_PATHS.SERVER_PANEL_UPDATE, "POST");
     } catch {
       throw new Error("Panel update failed");
     }
@@ -2921,7 +3256,6 @@ async function buildAdminClientButtons(chatId, client, panel, env) {
 }
 
 function buildUserViewButtons(email, panelId, env) {
-  const webAppBtn = env ? buildWebAppButton("📱 پنل کاربری", env) : null;
   const supportUser = getSupportUsername(env);
   /** @type {any[][]} */
   const buttons = [
@@ -2940,9 +3274,6 @@ function buildUserViewButtons(email, panelId, env) {
   ];
   if (supportUser) {
     buttons.push([{ text: "🎧 پشتیبانی", url: `https://t.me/${supportUser}` }]);
-  }
-  if (webAppBtn) {
-    buttons.unshift([webAppBtn]);
   }
   return buttons;
 }
@@ -2995,7 +3326,7 @@ async function sendUserMenu(chatId, env) {
 
 async function autoBackupAllPanels(env) {
   const panels = await getPanels(env);
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
 
   for (const panel of panels) {
     try {
@@ -3051,7 +3382,7 @@ async function autoBackupAllPanels(env) {
 
 async function checkXrayHealthAllPanels(env) {
   const panels = await getPanels(env);
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
   const alertIds = new Set([...adminIds]);
 
   for (const panel of panels) {
@@ -3103,7 +3434,7 @@ async function checkXrayHealthAllPanels(env) {
 
 async function checkResourceAlertsAllPanels(env) {
   const panels = await getPanels(env);
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
 
   for (const panel of panels) {
     try {
@@ -3146,7 +3477,7 @@ async function checkResourceAlertsAllPanels(env) {
 
 async function sendDailyReportAllPanels(env) {
   const panels = await getPanels(env);
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
 
   for (const panel of panels) {
     try {
@@ -3197,7 +3528,7 @@ async function sendDailyReportAllPanels(env) {
 
 async function processPendingRenewals(env) {
   const pending = await getPendingRenewals(env);
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
 
   for (const request of pending) {
     const notified = await kvGet(env, `${KV_RENEWAL_PREFIX}notified:${request.id}`);
@@ -3299,19 +3630,19 @@ async function handleTelegramUpdate(update, env) {
     const text = String(message.text || "").trim();
     const fromId = String(message.from?.id || chatId);
 
-    // Check ban status (admins are exempt)
-    const isAdmin = await isAdminAsync(chatId, env);
-    if (!isAdmin) {
+    // Check ban (admins exempt)
+    const isAdminUser = await isAdminAsync(chatId, env);
+    if (!isAdminUser) {
       const ban = await isUserBanned(env, chatId);
       if (ban) {
-        await sendTelegram(chatId, `🚫 شما از ربات بن شده‌اید.\n${ban.reason ? `原因: ${ban.reason}\n` : ""}🕐 زمان: ${new Date(ban.bannedAt).toLocaleString("fa-IR")}`, env);
-        return;
+        const banMsg = `🚫 بن شده‌اید.\n${ban.reason ? `📝 ${ban.reason}\n` : ""}🕐 ${new Date(ban.bannedAt).toLocaleString("fa-IR")}`;
+        await sendTelegram(chatId, banMsg, env); return;
       }
-      const suspension = await isUserSuspended(env, chatId);
-      if (suspension) {
-        const remaining = Math.ceil((suspension.until - Date.now()) / 60000);
-        await sendTelegram(chatId, `⏸ حساب شما موقتاً تعلیق شده است.\n${suspension.reason ? `原因: ${suspension.reason}\n` : ""}⏳ زمان باقیمانده: ${remaining} دقیقه`, env);
-        return;
+      const susp = await isUserSuspended(env, chatId);
+      if (susp) {
+        const rem = Math.ceil((susp.until - Date.now()) / 60000);
+        const suspMsg = `⏸ تعلیق موقت.\n${susp.reason ? `📝 ${susp.reason}\n` : ""}⏳ ${rem} دقیقه`;
+        await sendTelegram(chatId, suspMsg, env); return;
       }
     }
 
@@ -3375,7 +3706,6 @@ async function handleTelegramUpdate(update, env) {
         const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -3413,7 +3743,6 @@ async function handleTelegramUpdate(update, env) {
         const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -3482,7 +3811,7 @@ async function handleTelegramUpdate(update, env) {
             ]);
             return;
           }
-          await createClient(panel, createAction.email, createAction.days, gb);
+          await createClient(panel, createAction.email, createAction.days, gb, { adminChatId: chatId });
           const client = await getClientByIdentifier(createAction.email, env, createAction.panelId);
           const msg = `✅ کاربر "${createAction.email}" ساخته شد.\n📅 ${createAction.days} روز | 📦 ${gb > 0 ? gb + " GB" : "نامحدود"}\n🖥️ سرور: ${panel.name}`;
           const buttons = client ? await buildAdminClientButtons(chatId, client, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
@@ -3499,7 +3828,6 @@ async function handleTelegramUpdate(update, env) {
             }
           } catch { /* ignore */ }
         } catch (error) {
-          await logError(env, "callback", error, { chatId });
           await sendTelegram(chatId, `❌ خطا در ساخت کاربر: ${shortError(error)}`, env, [
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
           ]);
@@ -3537,6 +3865,126 @@ async function handleTelegramUpdate(update, env) {
         [{ text: "🔙 مدیریت Xray", callback_data: "admin_xray" }],
       ]);
       return;
+    }
+
+    // Check ban action state (super admin interactive)
+    const banAction = await stateGet(env, `ban_action:${chatId}`);
+    if (banAction) {
+      await stateDelete(env, `ban_action:${chatId}`);
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
+      const targetId = normalizeIdentifier(text);
+      if (!targetId) { await sendTelegram(chatId, "❌ Chat ID نامعتبر", env, [[{text:"🔙",callback_data:"admin_ban_menu"}]]); return; }
+      if (await isAdminAsync(targetId, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان بن کرد", env, [[{text:"🔙",callback_data:"admin_ban_menu"}]]); return; }
+      await statePut(env, `ban_reason:${chatId}`, { targetId }, MS_PER_HOUR);
+      await sendTelegram(chatId, `📝 دلیل بن "${targetId}" را وارد کنید (یا 0 برای بدون دلیل):`, env, [
+        [{ text: "❌ انصراف", callback_data: "admin_ban_menu" }],
+      ]);
+      return;
+    }
+
+    const banReasonState = await stateGet(env, `ban_reason:${chatId}`);
+    if (banReasonState) {
+      await stateDelete(env, `ban_reason:${chatId}`);
+      const reason = text === "0" ? "" : text.trim();
+      await banUser(env, banReasonState.targetId, reason);
+      await sendTelegram(chatId, `🚫 کاربر "${banReasonState.targetId}" بن شد.${reason ? `\n📝 ${reason}` : ""}`, env, [
+        [{ text: "🔙 بن/تعلیق", callback_data: "admin_ban_menu" }],
+      ]);
+      try { await sendTelegram(banReasonState.targetId, `🚫 بن شدید.${reason ? `\n📝 ${reason}` : ""}`, env); } catch {}
+      return;
+    }
+
+    // Check suspend action state
+    const suspendAction = await stateGet(env, `suspend_action:${chatId}`);
+    if (suspendAction) {
+      await stateDelete(env, `suspend_action:${chatId}`);
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
+      const targetId = normalizeIdentifier(text);
+      if (!targetId) { await sendTelegram(chatId, "❌ Chat ID نامعتبر", env, [[{text:"🔙",callback_data:"admin_ban_menu"}]]); return; }
+      if (await isAdminAsync(targetId, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان تعلیق کرد", env, [[{text:"🔙",callback_data:"admin_ban_menu"}]]); return; }
+      await statePut(env, `suspend_min:${chatId}`, { targetId }, MS_PER_HOUR);
+      await sendTelegram(chatId, `⏸ چند دقیقه تعلیق شود؟ (مثلاً 60)`, env, [
+        [{ text: "❌ انصراف", callback_data: "admin_ban_menu" }],
+      ]);
+      return;
+    }
+
+    const suspendMinState = await stateGet(env, `suspend_min:${chatId}`);
+    if (suspendMinState) {
+      const mins = Number(text);
+      if (!mins || mins <= 0) { await sendTelegram(chatId, "❌ مقدار نامعتبر. عدد دقیقه را وارد کنید:", env); return; }
+      await stateDelete(env, `suspend_min:${chatId}`);
+      await statePut(env, `suspend_reason:${chatId}`, { targetId: suspendMinState.targetId, mins }, MS_PER_HOUR);
+      await sendTelegram(chatId, `📝 دلیل تعلیق را وارد کنید (یا 0 برای بدون دلیل):`, env, [
+        [{ text: "❌ انصراف", callback_data: "admin_ban_menu" }],
+      ]);
+      return;
+    }
+
+    const suspendReasonState = await stateGet(env, `suspend_reason:${chatId}`);
+    if (suspendReasonState) {
+      await stateDelete(env, `suspend_reason:${chatId}`);
+      const reason = text === "0" ? "" : text.trim();
+      const { targetId, mins } = suspendReasonState;
+      await suspendUser(env, targetId, mins, reason);
+      await sendTelegram(chatId, `⏸ "${targetId}" تعلیق شد (${mins} دقیقه).${reason ? `\n📝 ${reason}` : ""}`, env, [
+        [{ text: "🔙 بن/تعلیق", callback_data: "admin_ban_menu" }],
+      ]);
+      try { await sendTelegram(targetId, `⏸ تعلیق ${mins} دقیقه.${reason ? `\n📝 ${reason}` : ""}`, env); } catch {}
+      return;
+    }
+
+    // Check addadmin action state (super admin interactive)
+    const addAdminAction = await stateGet(env, `addadmin_action:${chatId}`);
+    if (addAdminAction) {
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await stateDelete(env, `addadmin_action:${chatId}`); await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
+      if (addAdminAction.step === "chatId") {
+        addAdminAction.targetId = normalizeIdentifier(text);
+        addAdminAction.step = "panels";
+        await statePut(env, `addadmin_action:${chatId}`, addAdminAction, MS_PER_HOUR);
+        if (addAdminAction.type === "super") {
+          // Super admin: no panels needed, ask for confirmation
+          await stateDelete(env, `addadmin_action:${chatId}`);
+          await setSuperAdmin(env, addAdminAction.targetId);
+          await sendTelegram(chatId, `👑 سوپر ادمین "${addAdminAction.targetId}" اضافه شد!`, env, [
+            [{ text: "🔙 مدیریت ادمین‌ها", callback_data: "admin_manage_admins" }],
+          ]);
+          try { await sendTelegram(addAdminAction.targetId, `👑 شما سوپر ادمین شدید! /admin بزنید.`, env); } catch {}
+          return;
+        }
+        const panels = await getPanels(env);
+        let msg = "🖥️ پنل‌های موجود:\n";
+        for (const p of panels) { msg += `• ${p.id} — ${p.name}\n`; }
+        msg += "\n💬 پنل‌ها را با کاما وارد کنید (مثلاً US,DE):";
+        await sendTelegram(chatId, msg, env, [
+          [{ text: "❌ انصراف", callback_data: "admin_manage_admins" }],
+        ]);
+        return;
+      }
+      if (addAdminAction.step === "panels") {
+        const panelIds = text.split(",").map(s => s.trim()).filter(Boolean);
+        addAdminAction.panelIds = panelIds;
+        addAdminAction.step = "maxUsers";
+        await statePut(env, `addadmin_action:${chatId}`, addAdminAction, MS_PER_HOUR);
+        await sendTelegram(chatId, "📊 حداکثر تعداد کاربر را وارد کنید (یا 0 برای نامحدود):", env, [
+          [{ text: "❌ انصراف", callback_data: "admin_manage_admins" }],
+        ]);
+        return;
+      }
+      if (addAdminAction.step === "maxUsers") {
+        await stateDelete(env, `addadmin_action:${chatId}`);
+        const maxUsers = Number(text) || 0;
+        const { targetId, panelIds } = addAdminAction;
+        await addPanelAdmin(env, targetId, panelIds, maxUsers);
+        await sendTelegram(chatId, `✅ ادمین "${targetId}" اضافه شد.\n🖥️ پنل: ${panelIds.join(", ")}\n📊 محدودیت: ${maxUsers > 0 ? maxUsers : "نامحدود"}`, env, [
+          [{ text: "🔙 مدیریت ادمین‌ها", callback_data: "admin_manage_admins" }],
+        ]);
+        try { await sendTelegram(targetId, `✅ ادمین شدید! پنل: ${panelIds.join(", ")}. /admin بزنید.`, env); } catch {}
+        return;
+      }
     }
 
     // Check admin node add action state
@@ -3605,7 +4053,6 @@ async function handleTelegramUpdate(update, env) {
             [{ text: "🔙 مدیریت Nodes", callback_data: `panel_nodes:${panelId}` }],
           ]);
         } catch (error) {
-          await logError(env, "callback", error, { chatId });
           await sendTelegram(chatId, `❌ خطا در افزودن node: ${shortError(error)}`, env, [
             [{ text: "🔙 مدیریت Nodes", callback_data: `panel_nodes:${panelId}` }],
           ]);
@@ -3752,63 +4199,75 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
 
-    // ── Ban/Suspend commands ──
-
+    // ── Ban/Suspend (super admin) ──
     if (command === "ban" && admin) {
-      const targetId = args[0];
-      if (!targetId) { await sendTelegram(chatId, "استفاده: /ban <chatId> [دلیل]", env); return; }
-      if (await isAdminAsync(targetId, env)) { await sendTelegram(chatId, "❌ نمیتوان ادمین را بن کرد.", env); return; }
-      const reason = args.slice(1).join(" ") || "";
-      await banUser(env, targetId, reason);
-      await sendTelegram(chatId, `🚫 کاربر "${targetId}" بن شد.\n${reason ? `📝 دلیل: ${reason}` : ""}`, env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
-      try { await sendTelegram(targetId, `🚫 شما از ربات بن شده‌اید.\n${reason ? `📝 دلیل: ${reason}` : ""}`, env); } catch {}
+      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /ban <chatId> [دلیل]", env); return; }
+      if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان بن کرد", env); return; }
+      const r = args.slice(1).join(" ") || "";
+      await banUser(env, t, r);
+      await sendTelegram(chatId, `🚫 "${t}" بن شد.${r?`\n📝 ${r}`:""}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      try { await sendTelegram(t, `🚫 بن شدید.${r?`\n📝 ${r}`:""}`, env); } catch {}
       return;
     }
-
     if (command === "unban" && admin) {
-      const targetId = args[0];
-      if (!targetId) { await sendTelegram(chatId, "استفاده: /unban <chatId>", env); return; }
-      await unbanUser(env, targetId);
-      await sendTelegram(chatId, `✅ کاربر "${targetId}" رفع بن شد.`, env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
-      try { await sendTelegram(targetId, `✅ بن شما رفع شد.`, env); } catch {}
+      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unban <chatId>", env); return; }
+      await unbanUser(env, t);
+      await sendTelegram(chatId, `✅ "${t}" رفع بن شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      try { await sendTelegram(t, `✅ بن رفع شد.`, env); } catch {}
       return;
     }
-
     if (command === "suspend" && admin) {
-      const targetId = args[0];
-      const minutes = Number(args[1]);
-      if (!targetId || !minutes || minutes <= 0) { await sendTelegram(chatId, "استفاده: /suspend <chatId> <دقیقه> [دلیل]", env); return; }
-      if (await isAdminAsync(targetId, env)) { await sendTelegram(chatId, "❌ نمیتوان ادمین را تعلیق کرد.", env); return; }
-      const reason = args.slice(2).join(" ") || "";
-      await suspendUser(env, targetId, minutes, reason);
-      await sendTelegram(chatId, `⏸ کاربر "${targetId}" به مدت ${minutes} دقیقه تعلیق شد.\n${reason ? `📝 دلیل: ${reason}` : ""}`, env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
-      try { await sendTelegram(targetId, `⏸ حساب شما به مدت ${minutes} دقیقه تعلیق شد.\n${reason ? `📝 دلیل: ${reason}` : ""}`, env); } catch {}
+      const t = args[0]; const m = Number(args[1]);
+      if (!t || !m || m<=0) { await sendTelegram(chatId, "استفاده: /suspend <chatId> <دقیقه> [دلیل]", env); return; }
+      if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان تعلیق کرد", env); return; }
+      const r = args.slice(2).join(" ") || "";
+      await suspendUser(env, t, m, r);
+      await sendTelegram(chatId, `⏸ "${t}" تعلیق شد (${m} دقیقه).${r?`\n📝 ${r}`:""}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      try { await sendTelegram(t, `⏸ تعلیق ${m} دقیقه.${r?`\n📝 ${r}`:""}`, env); } catch {}
       return;
     }
-
     if (command === "unsuspend" && admin) {
-      const targetId = args[0];
-      if (!targetId) { await sendTelegram(chatId, "استفاده: /unsuspend <chatId>", env); return; }
-      await unsuspendUser(env, targetId);
-      await sendTelegram(chatId, `✅ تعلیق کاربر "${targetId}" لغو شد.`, env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
-      try { await sendTelegram(targetId, `✅ تعلیق حساب شما لغو شد.`, env); } catch {}
+      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unsuspend <chatId>", env); return; }
+      await unsuspendUser(env, t);
+      await sendTelegram(chatId, `✅ تعلیق "${t}" لغو شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      return;
+    }
+    if (command === "bannedlist" && admin) {
+      const b = await getBannedUsers(env);
+      if (!b.length) { await sendTelegram(chatId, "✅ بن شده‌ای نیست.", env); return; }
+      let m = `🚫 بن شده (${b.length}):\n\n`; for (const x of b) m += `• ${x.chatId} — ${x.reason||"-"}\n`;
+      await sendTelegram(chatId, m, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       return;
     }
 
-    if (command === "bannedlist" && admin) {
-      const banned = await getBannedUsers(env);
-      if (!banned.length) { await sendTelegram(chatId, "✅ هیچ کاربر بن شده‌ای وجود ندارد.", env); return; }
-      let msg = `🚫 کاربران بن شده (${banned.length}):\n\n`;
-      for (const b of banned) { msg += `• ${b.chatId} — ${b.reason || "بدون دلیل"} — ${new Date(b.bannedAt).toLocaleString("fa-IR")}\n`; }
-      await sendTelegram(chatId, msg, env, [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
+    // ── Admin role management (super admin) ──
+    if (command === "addadmin" && admin) {
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
+      const t = args[0]; const pids = args[1]||""; const mx = Number(args[2])||0;
+      if (!t || !pids) { await sendTelegram(chatId, "استفاده: /addadmin <chatId> <panelId1,panelId2> [maxUsers]", env); return; }
+      const pl = pids.split(",").map(s=>s.trim()).filter(Boolean);
+      await addPanelAdmin(env, t, pl, mx);
+      await sendTelegram(chatId, `✅ ادمین "${t}" اضافه شد.\n🖥️ پنل: ${pl.join(", ")}\n📊 محدودیت: ${mx>0?mx:"نامحدود"}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      try { await sendTelegram(t, `✅ ادمین شدید! پنل: ${pl.join(", ")}. /admin بزنید.`, env); } catch {}
+      return;
+    }
+    if (command === "removeadmin" && admin) {
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
+      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /removeadmin <chatId>", env); return; }
+      // Can't remove super admins
+      const targetRole = await getAdminRole(env, t);
+      if (targetRole && targetRole.role === "super") { await sendTelegram(chatId, "❌ نمی‌توان سوپر ادمین را حذف کرد.", env); return; }
+      await removePanelAdmin(env, t);
+      await sendTelegram(chatId, `✅ ادمین "${t}" حذف شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      return;
+    }
+    if (command === "admins" && admin) {
+      const list = await getAllAdminsWithRoles(env);
+      let m = `👥 ادمین‌ها (${list.length}):\n\n`;
+      for (const a of list) { m += `${a.role==="super"?"👑":"🛠️"} ${a.chatId} — ${a.role==="super"?"سوپر":"پنل"} — ${a.createdCount} کاربر${a.maxUsers>0?`/${a.maxUsers}`:""}\n`; }
+      await sendTelegram(chatId, m, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       return;
     }
 
@@ -3856,7 +4315,6 @@ async function handleTelegramUpdate(update, env) {
     await sendTelegram(chatId, "دستور ناشناخته. /help را بزنید.", env);
   } catch (error) {
     console.error("handleTelegramUpdate error:", shortError(error));
-    await logError(env, "telegramUpdate", error, {});
   }
 }
 
@@ -4010,19 +4468,10 @@ async function sendAdminMenu(chatId, env) {
       { text: "📥 ریست ترافیک Inbound", callback_data: "admin_reset_inbound_traffic" },
     ],
     [
-      { text: "🗑 حذف منقضی‌ها", callback_data: "admin_del_depleted" },
-      { text: "🗑 حذف یتیم‌ها", callback_data: "admin_del_orphans" },
+      { text: "🚫 بن/تعلیق", callback_data: "admin_ban_menu" },
+      { text: "👥 ادمین‌ها", callback_data: "admin_manage_admins" },
     ],
     [
-      { text: "👥 گروه‌های کاربری", callback_data: "admin_groups" },
-      { text: "📤 خروجی کاربران", callback_data: "admin_export_clients" },
-    ],
-    [
-      { text: "📡 Xray Observability", callback_data: "admin_xray_observability" },
-      { text: "📊 تاریخچه سرور", callback_data: "admin_server_history" },
-    ],
-    [
-      { text: "🚫 بن/تعلیق کاربران", callback_data: "admin_ban_menu" },
       { text: "📋 لاگ خطاها", callback_data: "admin_error_logs" },
     ],
   ];
@@ -4031,7 +4480,16 @@ async function sendAdminMenu(chatId, env) {
   if (supportUser) {
     buttons.push([{ text: "🎧 پشتیبانی", url: `https://t.me/${supportUser}` }]);
   }
-  await sendTelegram(chatId, "🛠️ پنل مدیریت ادمین\n👇 یکی از گزینه‌ها را انتخاب کنید:", env, buttons);
+  const roleInfo = await getAdminRole(env, chatId);
+  const isSuper = !roleInfo || roleInfo.role === "super";
+  let menuText = isSuper ? "👑 پنل مدیریت سوپر ادمین" : "🛠️ پنل مدیریت";
+  if (!isSuper) {
+    const cnt = await getAdminCreatedCount(env, chatId);
+    const mx = roleInfo.maxUsers || 0;
+    menuText += `\n📊 کاربران: ${cnt}${mx>0?"/"+mx:""}`;
+  }
+  menuText += "\n👇 انتخاب کنید:";
+  await sendTelegram(chatId, menuText, env, buttons);
 }
 
 async function sendXrayMenu(chatId, env) {
@@ -4107,7 +4565,13 @@ async function handleSearch(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /search <شناسه>", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری با شناسه "${identifier}" یافت نشد.`, env);
     return;
@@ -4174,27 +4638,20 @@ async function handleCreate(chatId, args, env) {
   const panels = panel ? [panel] : await getPanels(env);
   const targetPanel = panels[0];
 
+  // Check user limit for panel admins
+  const role = await getAdminRole(env, chatId);
+  if (role && role.role === "admin") {
+    const cnt = await getAdminCreatedCount(env, chatId);
+    const mx = role.maxUsers || 0;
+    if (mx > 0 && cnt >= mx) { await sendTelegram(chatId, `❌ محدودیت ساخت کاربر (${cnt}/${mx})`, env); return; }
+  }
+
   try {
-    await createClient(targetPanel, identifier, days, gb);
+    await createClient(targetPanel, identifier, days, gb, { adminChatId: chatId });
     const client = await getClientByIdentifier(identifier, env, targetPanel.id);
     const msg = `✅ کاربر ساخته شد!\n\n${client ? formatClient(client, targetPanel) : ""}`;
     await sendTelegram(chatId, msg, env);
-
-    // Send QR code + subscription link after creation
-    if (client) {
-      const subId = client.subId || client.subid || client.sub_id || "";
-      if (subId && targetPanel.subBaseUrl) {
-        try {
-          const subLink = buildSubLink(subId, targetPanel);
-          const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(subLink)}`;
-          await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک کاربر "${identifier}":\n${subLink}`, env, [
-            [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-          ]);
-        } catch { /* ignore QR error */ }
-      }
-    }
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا در ساخت کاربر: ${shortError(error)}`, env);
   }
 }
@@ -4205,7 +4662,13 @@ async function handleDelete(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /delete <شناسه>", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4218,7 +4681,6 @@ async function handleDelete(chatId, args, env) {
     const user = await findUserByEmail(env, identifier, panel.id);
     if (user) await deleteUser(env, user.chatId);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا در حذف: ${shortError(error)}`, env);
   }
 }
@@ -4229,7 +4691,13 @@ async function handleEnable(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /enable <شناسه>", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4239,7 +4707,6 @@ async function handleEnable(chatId, args, env) {
     await updateClient(panel, client, { enable: true });
     await sendTelegram(chatId, `✅ کاربر "${identifier}" فعال شد.`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4250,7 +4717,13 @@ async function handleDisable(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /disable <شناسه>", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4260,7 +4733,6 @@ async function handleDisable(chatId, args, env) {
     await updateClient(panel, client, { enable: false });
     await sendTelegram(chatId, `⛔ کاربر "${identifier}" غیرفعال شد.`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4276,7 +4748,13 @@ async function handleAddGB(chatId, args, env) {
     await sendTelegram(chatId, "❌ مقادیر نامعتبر.", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4287,7 +4765,6 @@ async function handleAddGB(chatId, args, env) {
     const updated = await getClientByIdentifier(identifier, env, panel.id);
     await sendTelegram(chatId, `✅ ${gb} GB حجم اضافه شد.\n\n${updated ? formatClient(updated, panel) : ""}`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4301,7 +4778,13 @@ async function handleRenewAdmin(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /renew <شناسه> <روز> [آیدی پنل]", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4316,7 +4799,6 @@ async function handleRenewAdmin(chatId, args, env) {
     const updated = await getClientByIdentifier(identifier, env, target.panel.id);
     await sendTelegram(chatId, `✅ ${days} روز تمدید شد.\n\n${updated ? formatClient(updated, target.panel) : ""}`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4327,7 +4809,13 @@ async function handleLink(chatId, args, env) {
     await sendTelegram(chatId, "استفاده: /link <شناسه>", env);
     return;
   }
-  const results = await searchClientAcrossPanels(identifier, env);
+  let results = await searchClientAcrossPanels(identifier, env);
+  // Panel admins: only see their panels + users they created
+  const searchRole = await getAdminRole(env, chatId);
+  if (searchRole && searchRole.role === "admin") {
+    const allowed = searchRole.panelIds || [];
+    results = results.filter(r => allowed.includes(r.panel.id));
+  }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
     return;
@@ -4343,7 +4831,6 @@ async function handleLink(chatId, args, env) {
     const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
     await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4383,14 +4870,18 @@ async function handleClients(chatId, args, env) {
 
     await sendTelegram(chatId, msg, env, buttons.length ? buttons : null);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
 async function handleStatus(chatId, args, env) {
   const panelId = args[0] || null;
-  const panels = panelId ? [await resolvePanelAsync(env, panelId)].filter(Boolean) : await getPanels(env);
+  let panels = panelId ? [await resolvePanelAsync(env, panelId)].filter(Boolean) : await getPanels(env);
+  // Panel admins: only their assigned panels
+  const statusRole = await getAdminRole(env, chatId);
+  if (statusRole && statusRole.role === "admin") {
+    panels = panels.filter(p => (statusRole.panelIds||[]).includes(p.id));
+  }
 
   for (const panel of panels) {
     try {
@@ -4447,7 +4938,6 @@ async function handleStatus(chatId, args, env) {
 
       await sendTelegram(chatId, msg, env, buttons);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا در دریافت وضعیت ${panel.name}: ${shortError(error)}`, env);
     }
   }
@@ -4460,7 +4950,7 @@ async function handleOnline(chatId, args, env) {
       // Get online users from /panel/api/inbounds/onlines endpoint
       let onlineUsers = [];
       try {
-        const onlineResponse = await panelApi(panel, API_PATHS.CLIENTS_ONLINES, "POST");
+        const onlineResponse = await panelApi(panel, API_PATHS.INBOUNDS_ONLINE, "GET");
         onlineUsers = extractOnlineUsers(onlineResponse);
       } catch { /* try fallback */ }
 
@@ -4486,7 +4976,6 @@ async function handleOnline(chatId, args, env) {
         [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
         [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
@@ -4498,56 +4987,44 @@ async function handleOnline(chatId, args, env) {
 function extractOnlineUsers(response) {
   const users = [];
   if (!response) return users;
-  const obj = response?.obj || response;
-
-  // /panel/api/clients/onlines returns an array of email strings
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      if (typeof item === "string") {
-        users.push({ email: item, ip: "", id: "", total: 0, up: 0, down: 0, inboundId: "", lastOnline: 0 });
-      } else if (item && typeof item === "object") {
-        const email = item.email || "";
-        const ip = item.ip || "";
-        if (email) {
-          users.push({
-            email, ip, id: item.id || item.uuid || "",
-            total: Number(item.total || 0), up: Number(item.up || 0), down: Number(item.down || 0),
-            inboundId: item.inboundId || "", lastOnline: item.lastOnline || 0,
-          });
-        }
-      }
-    }
-    return users;
-  }
-
-  // Fallback: flatten and search
   const flat = flattenCandidates(response);
   const seen = new Set();
   for (const item of flat) {
-    if (!item) continue;
-    if (typeof item === "string" && item.length > 0 && item.includes("@")) {
-      if (!seen.has(item)) { seen.add(item); users.push({ email: item, ip: "", id: "", total: 0, up: 0, down: 0, inboundId: "", lastOnline: 0 }); }
-    } else if (item && typeof item === "object") {
-      const email = item.email || "";
-      const ip = item.ip || "";
-      if (email && (ip || item.lastOnline)) {
-        const key = email + ":" + ip;
-        if (!seen.has(key)) {
-          seen.add(key);
-          let isOnline = true;
-          if (item.lastOnline) {
-            const lastOnline = Number(item.lastOnline);
-            const lastOnlineMs = lastOnline < 1e12 ? lastOnline * 1000 : lastOnline;
-            isOnline = (Date.now() - lastOnlineMs) < 2 * 60 * 1000;
-          }
-          if (isOnline) {
-            users.push({
-              email, ip, id: item.id || item.uuid || "",
-              total: Number(item.total || 0), up: Number(item.up || 0), down: Number(item.down || 0),
-              inboundId: item.inboundId || "", lastOnline: item.lastOnline || 0,
-            });
-          }
+    if (!item || typeof item !== "object") continue;
+    // ClientTraffic schema: email, id, uuid, ip, total, up, down, lastOnline, enable, inboundId
+    // Online users from /panel/api/inbounds/onlines have: email, ip, total, id, inboundId
+    const email = item.email || "";
+    const ip = item.ip || "";
+    const id = item.id || item.uuid || "";
+
+    // Include if has email and (ip or lastOnline)
+    if (email && (ip || item.lastOnline)) {
+      const key = email + ":" + ip;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      // Check if lastOnline is recent (within 2 minutes = online)
+      let isOnline = true;
+      if (item.lastOnline) {
+        const lastOnline = Number(item.lastOnline);
+        if (lastOnline > 0) {
+          // lastOnline might be in seconds or milliseconds
+          const lastOnlineMs = lastOnline < 1e12 ? lastOnline * 1000 : lastOnline;
+          isOnline = (Date.now() - lastOnlineMs) < 2 * 60 * 1000; // 2 minutes
         }
+      }
+
+      if (isOnline) {
+        users.push({
+          email: email,
+          id: id,
+          ip: ip,
+          total: Number(item.total || 0),
+          up: Number(item.up || 0),
+          down: Number(item.down || 0),
+          inboundId: item.inboundId || "",
+          lastOnline: item.lastOnline || 0,
+        });
       }
     }
   }
@@ -4563,7 +5040,6 @@ async function handleVersions(chatId, args, env) {
       const msg = `📊 نسخه ها\n\n🖥️ سرور: ${panel.name}\n📡 پنل: ${panelVer}\n🔄 Xray: ${xrayVer || "نامشخص"}`;
       await sendTelegram(chatId, msg, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4577,7 +5053,6 @@ async function handleXrayRestart(chatId, args, env) {
       await restartXray(panel);
       await sendTelegram(chatId, `✅ Xray در سرور "${panel.name}" ریستارت شد.`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4591,7 +5066,6 @@ async function handleXrayStop(chatId, args, env) {
       await stopXray(panel);
       await sendTelegram(chatId, `⛳ Xray در سرور "${panel.name}" متوقف شد.`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4604,7 +5078,6 @@ async function handleXrayVersionCmd(chatId, args, env) {
       const ver = await getXrayVersion(panel);
       await sendTelegram(chatId, `🔄 Xray نسخه (${panel.name}): ${ver || "نامشخص"}`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4622,7 +5095,6 @@ async function handleXrayUpdate(chatId, args, env) {
       await updateXray(panel, version);
       await sendTelegram(chatId, `✅ Xray به نسخه ${version} بروزرسانی شد (${panel.name}).`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4635,7 +5107,6 @@ async function handlePanelVersionCmd(chatId, args, env) {
       const ver = await getPanelVersion(panel);
       await sendTelegram(chatId, `📡 نسخه پنل (${panel.name}): ${ver}`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4648,7 +5119,6 @@ async function handlePanelUpdateCmd(chatId, args, env) {
       await updatePanel(panel);
       await sendTelegram(chatId, `✅ پنل "${panel.name}" بروزرسانی شد.`, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
@@ -4716,7 +5186,6 @@ async function handleDeletePanel(chatId, args, env) {
     await removePanel(env, panelId);
     await sendTelegram(chatId, `✅ پنل "${panelId}" حذف شد.`, env);
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4729,8 +5198,8 @@ async function handleMakeAdmin(chatId, env) {
     await sendTelegram(chatId, "❌ فقط زمانی که هیچ ادمینی وجود ندارد می‌توانید ادمین شوید.", env);
     return;
   }
-  await addAdminId(env, chatId);
-  await sendTelegram(chatId, `✅ شما به عنوان ادمین ثبت شدید!`, env);
+  await setSuperAdmin(env, chatId);
+  await sendTelegram(chatId, `✅ شما به عنوان سوپر ادمین ثبت شدید!`, env);
 }
 
 async function handleAdminAdd(chatId, args, env) {
@@ -4840,7 +5309,7 @@ async function handleRenewalAmountInput(chatId, renewState, text, env) {
   ]);
 
   // Notify admins immediately
-  const adminIds = await getAllAdminIdsAsync(env);
+  const adminIds = await getSuperAdminIds(env);
   const panel = await resolvePanelAsync(env, user.panelId);
   const panelName = panel ? panel.name : user.panelId;
 
@@ -4900,7 +5369,6 @@ async function handleBackup(chatId, args, env) {
       const caption = `📦 بکاپ - ${panel.name}\n🕐 ${new Date().toLocaleString("fa-IR")}`;
       await sendDocumentBuffer(chatId, backupBuffer, filename, caption, env);
     } catch (error) {
-      await logError(env, "callback", error, { chatId });
       await sendTelegram(chatId, `❌ خطا در بکاپ ${panel.name}: ${shortError(error)}`, env);
     }
   }
@@ -4909,7 +5377,7 @@ async function handleBackup(chatId, args, env) {
 async function handleExportConfig(chatId, env) {
   try {
     const panels = await getPanels(env);
-    const adminIds = await getAllAdminIdsAsync(env);
+    const adminIds = await getSuperAdminIds(env);
     const users = await getAllUsers(env);
     const exportData = {
       panels: panels.map((p) => ({ id: p.id, name: p.name, panelUrl: p.panelUrl })),
@@ -4920,7 +5388,6 @@ async function handleExportConfig(chatId, env) {
     const msg = `📤 خروجی کانفیگ\n\n🖥️ پنل‌ها: ${panels.length}\n👥 ادمین‌ها: ${adminIds.length}\n👤 کاربران ثبت‌نام شده: ${users.length}\n\n\`\`\`json\n${JSON.stringify(exportData, null, 2)}\n\`\`\``;
     await sendTelegram(chatId, msg, env, null, "Markdown");
   } catch (error) {
-    await logError(env, "callback", error, { chatId });
     await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
@@ -4929,60 +5396,47 @@ async function handleExportConfig(chatId, env) {
 
 async function handleHelp(chatId, isAdmin, env) {
   if (isAdmin) {
-    const supportUser = getSupportUsername(env);
     const msg =
-      `📖 راهنمای کامل ادمین\n\n` +
-      `🔧 مدیریت کاربران:\n` +
-      `   /search <شناسه> — جستجوی کاربر\n` +
-      `   /create <شناسه> <روز> <حجم> [پنل] — ساخت کاربر\n` +
-      `   /delete <شناسه> — حذف کاربر\n` +
-      `   /enable <شناسه> — فعال کردن\n` +
-      `   /disable <شناسه> — غیرفعال کردن\n` +
-      `   /addgb <شناسه> <حجم> — افزایش حجم\n` +
-      `   /renew <شناسه> <روز> [پنل] — تمدید\n` +
-      `   /clients [صفحه] — لیست کاربران\n\n` +
-      `🖥️ مدیریت سرور:\n` +
-      `   /status [پنل] — وضعیت سرور\n` +
-      `   /online — کاربران آنلاین\n` +
-      `   /versions — نسخه پنل و Xray\n` +
-      `   /xray_restart [پنل] — ریستارت Xray\n` +
-      `   /xray_stop [پنل] — توقف Xray\n` +
-      `   /xray_update <نسخه> — بروزرسانی Xray\n\n` +
-      `📦 مدیریت پنل:\n` +
-      `   /addpanel — افزودن پنل جدید\n` +
-      `   /dellpanel <آیدی> — حذف پنل\n` +
-      `   /panels — لیست پنل‌ها\n` +
-      `   /backup [پنل] — دریافت بکاپ\n\n` +
-      `🛠️ منوی تعاملی:\n` +
-      `   /admin — پنل مدیریت (دکمه‌های تعاملی)\n` +
-      `   شامل: Nodes, Hosts, Inbounds, API Tokens,\n` +
-      `   Outbounds, Settings, Groups, Backup و...\n\n` +
-      `🚫 بن/تعلیق:\n` +
-      `   /ban <chatId> [دلیل] — بن کردن کاربر\n` +
-      `   /unban <chatId> — رفع بن\n` +
-      `   /suspend <chatId> <دقیقه> [دلیل] — تعلیق موقت\n` +
-      `   /unsuspend <chatId> — لغو تعلیق\n` +
-      `   /bannedlist — لیست بن‌شده‌ها\n\n` +
-      `👤 مدیریت ادمین:\n` +
-      `   /makeadmin — ادمین شدن (فقط اولین بار)\n` +
-      `   /adminadd <chatId> — افزودن ادمین\n` +
-      `   /admindel <chatId> — حذف ادمین` +
-      (supportUser ? `\n\n🎧 پشتیبانی: @${supportUser}` : "");
+      `📖 دستورات ادمین:\n\n` +
+      `🔍 /search <شناسه> — جستجوی کاربر\n` +
+      `👤 /user <شناسه> — اطلاعات کاربر\n` +
+      `➕ /create <شناسه> <روز> <حجم> [پنل] — ساخت کاربر\n` +
+      `🗑 /delete <شناسه> — حذف کاربر\n` +
+      `✅ /enable <شناسه> — فعال کردن\n` +
+      `⛔ /disable <شناسه> — غیرفعال کردن\n` +
+      `📦 /addgb <شناسه> <حجم> — افزایش حجم\n` +
+      `⏱ /renew <شناسه> <روز> [پنل] — تمدید\n` +
+      `🔗 /link <شناسه> — لینک اشتراک\n` +
+      `👥 /clients [صفحه] — لیست کاربران\n` +
+      `📊 /status [پنل] — وضعیت سرور\n` +
+      `🟢 /online — کاربران آنلاین\n` +
+      `📊 /report — گزارش روزانه\n` +
+      `📊 /versions — نسخه پنل و Xray\n` +
+      `🔄 /xray_restart [پنل] — ریستارت Xray\n` +
+      `⛳ /xray_stop [پنل] — توقف Xray\n` +
+      `🔄 /xray_version — نسخه Xray\n` +
+      `🔄 /xray_update <نسخه> — بروزرسانی Xray\n` +
+      `📡 /panel_version — نسخه پنل\n` +
+      `📡 /panel_update — بروزرسانی پنل\n\n` +
+      `🖥️ مدیریت پنل:\n` +
+      `/addpanel — افزودن پنل\n` +
+      `/dellpanel <آیدی> — حذف پنل\n` +
+      `/panels — لیست پنل‌ها\n` +
+      `/backup [پنل] — دریافت بکاپ\n` +
+      `/export — خروجی کانفیگ\n\n` +
+      `🛠️ مدیریت ادمین:\n` +
+      `/makeadmin — ادمین شدن (فقط اولین بار)\n` +
+      `/adminadd <chatId> — افزودن ادمین\n` +
+      `/admindel <chatId> — حذف ادمین\n` +
+      `/admin — پنل مدیریت`;
     await sendTelegram(chatId, msg, env);
   } else {
-    const supportUser = getSupportUsername(env);
     const msg =
-      `📖 راهنمای کاربر\n\n` +
+      `📖 دستورات:\n\n` +
       `/start — ثبت‌نام / مشاهده اطلاعات\n` +
       `/usage — مشاهده مصرف\n` +
       `/renew — درخواست تمدید\n` +
-      `/help — راهنما\n\n` +
-      `💡 از دکمه‌های تعاملی زیر استفاده کنید:\n` +
-      `   🔄 بروزرسانی اطلاعات\n` +
-      `   🔗 لینک اشتراک\n` +
-      `   📅 درخواست تمدید\n` +
-      `   📋 اطلاعات پشتیبان` +
-      (supportUser ? `\n\n🎧 پشتیبانی: @${supportUser}` : "");
+      `/help — راهنما`;
     await sendTelegram(chatId, msg, env);
   }
 }
@@ -5339,6 +5793,12 @@ async function handleCallbackQuery(callbackQuery, env) {
       await stateDelete(env, `addgb_action:${chatId}`);
       await stateDelete(env, `renew_action:${chatId}`);
       await stateDelete(env, `node_add_action:${chatId}`);
+      await stateDelete(env, `ban_action:${chatId}`);
+      await stateDelete(env, `ban_reason:${chatId}`);
+      await stateDelete(env, `suspend_action:${chatId}`);
+      await stateDelete(env, `suspend_min:${chatId}`);
+      await stateDelete(env, `suspend_reason:${chatId}`);
+      await stateDelete(env, `addadmin_action:${chatId}`);
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendAdminMenu(chatId, env);
       await answerCallbackQuery(callbackQueryId, env);
@@ -5440,7 +5900,6 @@ async function handleCallbackQuery(callbackQuery, env) {
           [{ text: "🔙 مدیریت پنل‌ها", callback_data: "admin_panels" }],
         ]);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
       }
       await answerCallbackQuery(callbackQueryId, env);
@@ -5508,7 +5967,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "نسخه دریافت شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در دریافت نسخه: ${shortError(error)}`, env, [
           [{ text: "🔙 مدیریت Xray", callback_data: "admin_xray" }],
         ]);
@@ -5529,7 +5987,6 @@ async function handleCallbackQuery(callbackQuery, env) {
             [{ text: "🔄 ریستارت", callback_data: `xray_restart:${panel.id}` }, { text: "🔙 مدیریت Xray", callback_data: "admin_xray" }],
           ]);
         } catch (error) {
-          await logError(env, "callback", error, { chatId });
           await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
         }
       }
@@ -5617,7 +6074,6 @@ async function handleCallbackQuery(callbackQuery, env) {
           ]);
         }
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -5629,6 +6085,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── API Tokens management ──
     if (data === "admin_api_tokens") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       /** @type {any[][]} */
@@ -5670,7 +6128,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         buttons.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       }
       await answerCallbackQuery(callbackQueryId, env);
@@ -5712,7 +6169,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "حذف شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
           [{ text: "🔙 توکن‌های API", callback_data: `panel_api_tokens:${panelId}` }],
         ]);
@@ -5724,6 +6180,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Outbounds ──
     if (data === "admin_outbounds") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       /** @type {any[][]} */
@@ -5759,7 +6217,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         }
         await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       }
       await answerCallbackQuery(callbackQueryId, env);
@@ -5769,6 +6226,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Outbound traffic ──
     if (data === "admin_outbound_traffic") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       let msg = `📤 ترافیک Outbound:\n\n`;
@@ -5797,6 +6256,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Reset inbound traffic ──
     if (data === "admin_reset_inbound_traffic") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       /** @type {any[][]} */
@@ -5847,7 +6308,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "ریست شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
         await answerCallbackQuery(callbackQueryId, env, "خطا");
       }
@@ -5857,6 +6317,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Settings ──
     if (data === "admin_settings") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       /** @type {any[][]} */
@@ -5918,196 +6380,8 @@ async function handleCallbackQuery(callbackQuery, env) {
         }
         await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       }
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Delete depleted clients ──
-    if (data === "admin_del_depleted") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      await sendTelegram(chatId, "⚠️ آیا مطمئنید تمام کاربران منقضی/اتمام حجمی حذف شوند؟", env, [
-        [
-          { text: "✅ بله، حذف شوند", callback_data: "admin_del_depleted_yes" },
-          { text: "❌ خیر", callback_data: "admin_back" },
-        ],
-      ]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    if (data === "admin_del_depleted_yes") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "🗑 حذف کاربران منقضی/اتمام حجمی:\n\n";
-      for (const panel of panels) {
-        try {
-          const result = await deleteDepletedClients(panel);
-          const count = result?.obj?.count || result?.count || "نامشخص";
-          msg += `✅ ${panel.name}: ${count} کاربر حذف شد\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n`;
-        }
-      }
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Delete orphan clients ──
-    if (data === "admin_del_orphans") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      await sendTelegram(chatId, "⚠️ آیا مطمئنید تمام کاربران یتیم (بدون inbound) حذف شوند؟", env, [
-        [
-          { text: "✅ بله، حذف شوند", callback_data: "admin_del_orphans_yes" },
-          { text: "❌ خیر", callback_data: "admin_back" },
-        ],
-      ]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    if (data === "admin_del_orphans_yes") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "🗑 حذف کاربران یتیم:\n\n";
-      for (const panel of panels) {
-        try {
-          const result = await deleteOrphanClients(panel);
-          const count = result?.obj?.count || result?.count || "نامشخص";
-          msg += `✅ ${panel.name}: ${count} کاربر حذف شد\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n`;
-        }
-      }
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Client groups ──
-    if (data === "admin_groups") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "👥 گروه‌های کاربری:\n\n";
-      for (const panel of panels) {
-        try {
-          const result = await listClientGroups(panel);
-          const groups = result?.obj || result || [];
-          msg += `🖥️ ${panel.name}:\n`;
-          if (Array.isArray(groups) && groups.length > 0) {
-            for (const group of groups) {
-              msg += `   👥 ${group.name || group}: ${group.count || 0} کاربر\n`;
-            }
-          } else {
-            msg += `   ❌ گروهی یافت نشد\n`;
-          }
-          msg += `\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n\n`;
-        }
-      }
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Export clients ──
-    if (data === "admin_export_clients") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "📤 خروجی کاربران:\n\n";
-      for (const panel of panels) {
-        try {
-          const result = await exportClients(panel);
-          const clients = result?.obj || result || [];
-          const count = Array.isArray(clients) ? clients.length : 0;
-          msg += `✅ ${panel.name}: ${count} کاربر\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n`;
-        }
-      }
-      msg += "\n💡 خروجی کامل در لاگ‌های سرور ذخیره شده است.";
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Xray observability ──
-    if (data === "admin_xray_observability") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "📡 Xray Observability:\n\n";
-      for (const panel of panels) {
-        try {
-          const obs = await getXrayObservatory(panel);
-          const obj = obs?.obj || obs;
-          msg += `🖥️ ${panel.name}:\n`;
-          if (obj && typeof obj === "object") {
-            const entries = Array.isArray(obj) ? obj : Object.entries(obj);
-            if (Array.isArray(entries) && entries.length > 0) {
-              for (const entry of entries.slice(0, 5)) {
-                if (entry?.tag) {
-                  msg += `   📡 ${entry.tag}: ${entry.status || "نامشخص"}`;
-                  if (entry.delay) msg += ` (${entry.delay}ms)`;
-                  msg += `\n`;
-                }
-              }
-            } else {
-              msg += `   ❌ Observatory پیکربندی نشده\n`;
-            }
-          } else {
-            msg += `   ❌ داده‌ای موجود نیست\n`;
-          }
-          msg += `\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n\n`;
-        }
-      }
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
-      await answerCallbackQuery(callbackQueryId, env);
-      return;
-    }
-
-    // ── Server history ──
-    if (data === "admin_server_history") {
-      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
-      if (messageId) await deleteMessage(chatId, messageId, env);
-      const panels = await getPanels(env);
-      let msg = "📊 تاریخچه سرور (CPU - 6 ساعت اخیر):\n\n";
-      for (const panel of panels) {
-        try {
-          // Try different buckets automatically
-          const history = await getServerHistory(panel, "cpu", null);
-          const samples = history?.obj || history || [];
-          msg += `🖥️ ${panel.name}:\n`;
-          if (Array.isArray(samples) && samples.length > 0) {
-            // Show summary: min, max, avg
-            const values = samples.map(s => Number(s.v || 0)).filter(v => v >= 0);
-            if (values.length > 0) {
-              const min = Math.min(...values).toFixed(1);
-              const max = Math.max(...values).toFixed(1);
-              const avg = (values.reduce((a, b) => a + b, 0) / values.length).toFixed(1);
-              msg += `   📉 Min: ${min}% | 📈 Max: ${max}% | 📊 Avg: ${avg}%\n`;
-            }
-          } else {
-            msg += `   ❌ داده‌ای موجود نیست\n`;
-          }
-          msg += `\n`;
-        } catch (error) {
-          msg += `❌ ${panel.name}: ${shortError(error)}\n\n`;
-        }
-      }
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
     }
@@ -6119,32 +6393,20 @@ async function handleCallbackQuery(callbackQuery, env) {
       try {
         const errors = await getErrorLogs(env, 20);
         if (!errors.length) {
-          await sendTelegram(chatId, "✅ هیچ خطایی ثبت نشده است.", env, [
-            [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-          ]);
+          await sendTelegram(chatId, "✅ هیچ خطایی ثبت نشده است.", env, [[{text:"🔙",callback_data:"admin_back"}]]);
         } else {
           let msg = `📋 خطاهای اخیر (${errors.length}):\n\n`;
           for (const err of errors.slice(0, 15)) {
-            msg += `🕐 ${err.time}\n`;
-            msg += `🔧 عمل: ${err.action}\n`;
-            msg += `❌ خطا: ${err.error}\n`;
-            if (err.context && err.context !== "{}") msg += `📝 زمینه: ${err.context}\n`;
-            msg += `\n`;
+            msg += `🕐 ${err.time}\n🔧 ${err.action}\n❌ ${err.error}\n\n`;
           }
-          if (msg.length > 4000) msg = msg.slice(0, 4000) + "\n... (بیشتر)";
+          if (msg.length > 4000) msg = msg.slice(0, 4000) + "\n...";
           await sendTelegram(chatId, msg, env, [
-            [
-              { text: "🗑 پاک کردن خطاها", callback_data: "admin_clear_errors" },
-              { text: "🔄 بروزرسانی", callback_data: "admin_error_logs" },
-            ],
+            [{ text: "🗑 پاک کردن", callback_data: "admin_clear_errors" }, { text: "🔄 بروزرسانی", callback_data: "admin_error_logs" }],
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
           ]);
         }
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
-        await sendTelegram(chatId, `❌ خطا در دریافت لاگ: ${shortError(error)}`, env, [
-          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-        ]);
+        await sendTelegram(chatId, `❌ خطا در دریافت لاگ: ${shortError(error)}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -6154,28 +6416,55 @@ async function handleCallbackQuery(callbackQuery, env) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       await clearErrorLogs(env);
-      await sendTelegram(chatId, "✅ تمام خطاها پاک شدند.", env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
+      await sendTelegram(chatId, "✅ خطاها پاک شدند.", env, [[{text:"🔙",callback_data:"admin_back"}]]);
       await answerCallbackQuery(callbackQueryId, env, "پاک شد");
       return;
     }
 
-    // ── Ban/Suspend menu ──
+    // ── Ban/Suspend menu (super admin) ──
     if (data === "admin_ban_menu") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const banned = await getBannedUsers(env);
-      let msg = `🚫 مدیریت بن/تعلیق\n\n📋 کاربران بن شده (${banned.length}):\n`;
+      let msg = `🚫 مدیریت بن/تعلیق\n\n📋 بن شده (${banned.length}):\n`;
       /** @type {any[][]} */
-      const buttons = [];
+      const btns = [];
       for (const b of banned) {
-        msg += `• ${b.chatId} — ${b.reason || "بدون دلیل"} — ${new Date(b.bannedAt).toLocaleDateString("fa-IR")}\n`;
-        buttons.push([{ text: `✅ رفع بن ${b.chatId}`, callback_data: `unban:${b.chatId}` }]);
+        msg += `• ${b.chatId} — ${b.reason || "-"}\n`;
+        btns.push([{ text: `✅ رفع بن ${b.chatId}`, callback_data: `unban:${b.chatId}` }]);
       }
-      msg += `\n💡 برای بن/تعلیق کاربر، از دستورات زیر استفاده کنید:\n/ban <chatId> [دلیل]\n/suspend <chatId> <دقیقه> [دلیل]\n/unban <chatId>\n/unsuspend <chatId>`;
-      buttons.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
-      await sendTelegram(chatId, msg, env, buttons);
+      btns.push([{ text: "🚫 بن کاربر", callback_data: "ban_input" }]);
+      btns.push([{ text: "⏸ تعلیق کاربر", callback_data: "suspend_input" }]);
+      btns.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
+      await sendTelegram(chatId, msg, env, btns);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "ban_input") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await statePut(env, `ban_action:${chatId}`, { step: "chatId" }, MS_PER_HOUR);
+      await sendTelegram(chatId, "🚫 بن کاربر\n\n💬 Chat ID کاربر را وارد کنید:", env, [
+        [{ text: "❌ انصراف", callback_data: "admin_ban_menu" }],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "suspend_input") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await statePut(env, `suspend_action:${chatId}`, { step: "chatId" }, MS_PER_HOUR);
+      await sendTelegram(chatId, "⏸ تعلیق کاربر\n\n💬 Chat ID کاربر را وارد کنید:", env, [
+        [{ text: "❌ انصراف", callback_data: "admin_ban_menu" }],
+      ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
     }
@@ -6188,12 +6477,107 @@ async function handleCallbackQuery(callbackQuery, env) {
       await sendTelegram(chatId, `✅ کاربر "${targetId}" رفع بن شد.`, env, [
         [{ text: "🔙 بن/تعلیق", callback_data: "admin_ban_menu" }],
       ]);
-      await answerCallbackQuery(callbackQueryId, env, "رفع بن شد");
+      try { await sendTelegram(targetId, "✅ بن شما رفع شد.", env); } catch {}
+      await answerCallbackQuery(callbackQueryId, env, "رفع بن");
+      return;
+    }
+
+    // ── Manage admins (super admin) ──
+    if (data === "admin_manage_admins") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const list = await getAllAdminsWithRoles(env);
+      let msg = `👥 مدیریت ادمین‌ها (${list.length}):\n\n`;
+      /** @type {any[][]} */
+      const btns = [];
+      for (const a of list) {
+        const icon = a.role === "super" ? "👑" : "🛠️";
+        msg += `${icon} ${a.chatId} — ${a.role === "super" ? "سوپر" : "پنل"}`;
+        if (a.panelIds && a.panelIds.length) msg += ` — پنل: ${a.panelIds.join(",")}`;
+        msg += ` — ${a.createdCount} کاربر${a.maxUsers > 0 ? `/${a.maxUsers}` : ""}\n`;
+        if (a.role === "admin") {
+          btns.push([{ text: `🗑 حذف ${a.chatId}`, callback_data: `admin_remove:${a.chatId}` }]);
+        }
+      }
+      btns.push([{ text: "➕ افزودن ادمین پنل", callback_data: "addadmin_input" }]);
+      btns.push([{ text: "👑 افزودن سوپر ادمین", callback_data: "addsuper_input" }]);
+      btns.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
+      await sendTelegram(chatId, msg, env, btns);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "addadmin_input") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await statePut(env, `addadmin_action:${chatId}`, { step: "chatId", type: "admin" }, MS_PER_HOUR);
+      await sendTelegram(chatId, "➕ افزودن ادمین پنل\n\n💬 Chat ID ادمین جدید را وارد کنید:", env, [
+        [{ text: "❌ انصراف", callback_data: "admin_manage_admins" }],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "addsuper_input") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await statePut(env, `addadmin_action:${chatId}`, { step: "chatId", type: "super" }, MS_PER_HOUR);
+      await sendTelegram(chatId, "👑 افزودن سوپر ادمین\n\n💬 Chat ID را وارد کنید:", env, [
+        [{ text: "❌ انصراف", callback_data: "admin_manage_admins" }],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data.startsWith("admin_remove:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const targetId = data.slice("admin_remove:".length);
+      await sendTelegram(chatId, `⚠️ آیا مطمئنید ادمین "${targetId}" حذف شود؟`, env, [
+        [
+          { text: "✅ بله", callback_data: `admin_remove_yes:${targetId}` },
+          { text: "❌ خیر", callback_data: "admin_manage_admins" },
+        ],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data.startsWith("admin_remove_yes:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const targetId = data.slice("admin_remove_yes:".length);
+      // Double-check: can't remove super admins
+      const targetRole = await getAdminRole(env, targetId);
+      if (targetRole && targetRole.role === "super") {
+        await sendTelegram(chatId, "❌ نمی‌توان سوپر ادمین را حذف کرد.", env, [
+          [{ text: "🔙 مدیریت ادمین‌ها", callback_data: "admin_manage_admins" }],
+        ]);
+        await answerCallbackQuery(callbackQueryId, env, "خطا");
+        return;
+      }
+      await removePanelAdmin(env, targetId);
+      await sendTelegram(chatId, `✅ ادمین "${targetId}" حذف شد.`, env, [
+        [{ text: "🔙 مدیریت ادمین‌ها", callback_data: "admin_manage_admins" }],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env, "حذف شد");
       return;
     }
 
     if (data === "admin_panel_restart") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       const buttons = [];
@@ -6225,7 +6609,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "✅ ریستارت شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در ریستارت پنل: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -6281,7 +6664,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "لاگ دریافت شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در دریافت لاگ: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -6293,6 +6675,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Manage inbounds ──
     if (data === "admin_inbounds") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       const buttons = [];
@@ -6335,7 +6719,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در دریافت Inboundها: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -6383,7 +6766,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "حذف شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در حذف inbound: ${shortError(error)}`, env, [
           [{ text: "🔙 مدیریت Inbound", callback_data: `panel_inbounds:${panelId}` }],
         ]);
@@ -6395,6 +6777,8 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Manage nodes ──
     if (data === "admin_nodes") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       /** @type {any[][]} */
@@ -6457,7 +6841,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         buttons.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در دریافت nodes: ${shortError(error)}`, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
@@ -6515,7 +6898,6 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "حذف شد");
       } catch (error) {
-        await logError(env, "callback", error, { chatId });
         await sendTelegram(chatId, `❌ خطا در حذف node: ${shortError(error)}`, env, [
           [{ text: "🔙 مدیریت Nodes", callback_data: `panel_nodes:${panelId}` }],
         ]);
@@ -6551,24 +6933,16 @@ async function handleCallbackQuery(callbackQuery, env) {
         return;
       }
 
-      // For delete_confirm and reset_traffic_confirm, don't need to fetch client again
-      if (action === "delete_confirm" || action === "reset_traffic_confirm") {
-        // Create a minimal client object with just the identifier
-        const minimalClient = { email: identifier };
-        if (messageId) await deleteMessage(chatId, messageId, env);
-        await handleAdminAction(chatId, action, panel, minimalClient, env, callbackQueryId);
-        return;
-      }
-
       const client = await getClientByIdentifier(identifier, env, panelId);
       if (!client) {
         await answerCallbackQuery(callbackQueryId, env, "کاربر یافت نشد");
         return;
       }
 
-      // Delete the message that contained the button
-      if (messageId) await deleteMessage(chatId, messageId, env);
+      // Delete the message that contained the button (except for delete_confirm which shows confirmation)
+      if (messageId && action !== "delete_confirm") await deleteMessage(chatId, messageId, env);
 
+      // Pass messageId to handleAdminAction for delete confirmation
       await handleAdminAction(chatId, action, panel, client, env, callbackQueryId);
       return;
     }
@@ -6592,8 +6966,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     await answerCallbackQuery(callbackQueryId, env, "");
   } catch (error) {
     console.error("handleCallbackQuery error:", shortError(error));
-    await logError(env, `callback:${data}`, error, { chatId, fromId });
-    try { await answerCallbackQuery(callbackQueryId, env, "خطای سیستم - در لاگ خطاها ثبت شد"); } catch { /* ignore */ }
+    try { await answerCallbackQuery(callbackQueryId, env, "خطای سیستم"); } catch { /* ignore */ }
   }
 }
 
@@ -6669,7 +7042,6 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
           ]);
           await answerCallbackQuery(callbackQueryId, env, "IPها دریافت شد");
         } catch (error) {
-          await logError(env, `action:ips`, error, { chatId, identifier, panelId: panel?.id });
           await sendTelegram(chatId, `❌ خطا در دریافت IPها: ${shortError(error)}`, env, [
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
           ]);
@@ -6680,7 +7052,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
 
       case "reset_traffic": {
         // Show confirmation first
-        const confirmToken = await setAction(chatId, "reset_traffic_confirm", identifier, env, panel.id);
+        const confirmToken = await setAction(chatId, "reset_traffic_confirm", `${panel.id}:${identifier}`, env, panel.id);
         await sendTelegram(chatId, `⚠️ آیا مطمئنید ترافیک کاربر "${identifier}" ریست شود؟\n\n📊 مصرف فعلی صفر خواهد شد.`, env, [
           [
             { text: "✅ بله، ریست شود", callback_data: `act:${confirmToken}` },
@@ -6699,7 +7071,6 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
           ]);
           await answerCallbackQuery(callbackQueryId, env, "ریست شد");
         } catch (error) {
-          await logError(env, `action:reset_traffic`, error, { chatId, identifier, panelId: panel?.id });
           await sendTelegram(chatId, `❌ خطا در ریست ترافیک: ${shortError(error)}`, env, [
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
           ]);
@@ -6730,7 +7101,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
 
       case "delete": {
         // Show confirmation first
-        const confirmToken = await setAction(chatId, "delete_confirm", identifier, env, panel.id);
+        const confirmToken = await setAction(chatId, "delete_confirm", `${panel.id}:${identifier}`, env, panel.id);
         await sendTelegram(chatId, `⚠️ آیا مطمئنید کاربر "${identifier}" از سرور "${panel.name}" حذف شود؟\n\n❌ این عمل قابل بازگشت نیست!`, env, [
           [
             { text: "✅ بله، حذف شود", callback_data: `act:${confirmToken}` },
@@ -6751,7 +7122,6 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
           if (user) await deleteUser(env, user.chatId);
           await answerCallbackQuery(callbackQueryId, env, "حذف شد");
         } catch (error) {
-          await logError(env, `action:delete`, error, { chatId, identifier, panelId: panel?.id });
           await sendTelegram(chatId, `❌ خطا در حذف: ${shortError(error)}`, env, [
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
           ]);
@@ -6765,7 +7135,6 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
     }
   } catch (error) {
     console.error("handleAdminAction error:", shortError(error));
-    await logError(env, `adminAction:${action}`, error, { chatId, identifier, panelId: panel?.id });
     try { await answerCallbackQuery(callbackQueryId, env, `خطا: ${shortError(error)}`); } catch { /* ignore */ }
   }
 }
@@ -6796,25 +7165,6 @@ function extractIpsFromResponse(response) {
 function extractLogsFromResponse(response) {
   const logs = [];
   if (!response) return logs;
-
-  // Response might be { obj: "log line 1\nlog line 2\n..." }
-  const obj = response?.obj || response;
-
-  // If obj is a string, split by newlines
-  if (typeof obj === "string") {
-    return obj.split("\n").filter((line) => line.trim().length > 0);
-  }
-
-  // If obj is an array of strings
-  if (Array.isArray(obj)) {
-    for (const item of obj) {
-      if (typeof item === "string" && item.length > 0) logs.push(item);
-      else if (item && typeof item === "object" && item.msg) logs.push(String(item.msg));
-    }
-    return logs;
-  }
-
-  // Fallback: flatten and search
   const flat = flattenCandidates(response);
   for (const item of flat) {
     if (typeof item === "string" && item.length > 0) {
@@ -6832,5 +7182,4 @@ function extractLogsFromResponse(response) {
   }
   return logs;
 }
-
 
