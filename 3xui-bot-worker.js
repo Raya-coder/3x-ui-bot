@@ -120,7 +120,7 @@ const API_PATHS = {
 };
 
 const PANEL_VERSION_PATHS = [
-  { path: "/panel/api/server/getPanelUpdateInfo", method: "GET" },
+  { path: "/panel/api/server/getPanelUpdateInfo", method: "POST" },
   { path: "/panel/api/panel/version", method: "GET" },
   { path: "/panel/api/version", method: "GET" },
   { path: "/panel/api/server/version", method: "GET" },
@@ -2008,6 +2008,29 @@ function buildApiUrlCandidates(panel, path) {
 async function panelApi(panel, path, method, body = null) {
   const methodUpper = String(method || "GET").toUpperCase();
   const debug = String(panel.apiDebug || "").toLowerCase() === "true";
+
+  try {
+    return await panelApiOnce(panel, path, methodUpper, body, debug);
+  } catch (error) {
+    // Defensive method-swap fallback: if the original method returns
+    // 404 (route not found) or 405 (method not allowed), retry with
+    // the opposite HTTP method (GET↔POST). Different 3x-ui versions
+    // register some endpoints with different methods (e.g. /server/getLogs
+    // is POST in newer versions, GET in some older forks). The swap
+    // gracefully handles these version differences.
+    const msg = String(error?.message || error || "");
+    const isMethodIssue = msg.includes("404") || msg.includes("405") ||
+                          msg.includes("Not Found") || msg.includes("Method Not Allowed");
+    if (isMethodIssue && methodUpper !== (methodUpper === "GET" ? "POST" : "GET")) {
+      const swapped = methodUpper === "GET" ? "POST" : "GET";
+      if (debug) console.error(`[API METHOD SWAP] ${panel.name} ${methodUpper}→${swapped} ${path}`);
+      return await panelApiOnce(panel, path, swapped, body, debug);
+    }
+    throw error;
+  }
+}
+
+async function panelApiOnce(panel, path, methodUpper, body, debug) {
   const headers = buildAuthHeaders(panel);
 
   if (body !== null || methodUpper === "POST") {
@@ -2825,12 +2848,11 @@ async function restartPanel(panel) {
 }
 
 async function getServerLogs(panel) {
-  // Surface the real error to the caller so the admin can see WHY
-  // logs failed (auth error, 404, panel down, etc.) instead of always
-  // seeing the misleading "no logs found" message.
+  // 3x-ui registers /panel/api/server/getLogs as POST, not GET.
+  // Using GET here returns 404. Use POST.
   // The caller (panel_logs: callback handler) wraps this in try/catch
   // and shows `shortError(error)` to the admin.
-  return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "GET");
+  return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "POST");
 }
 
 async function addInbound(panel, inboundData) {
@@ -5044,15 +5066,19 @@ function extractOnlineUsers(response) {
   const seen = new Set();
   for (const item of flat) {
     if (!item || typeof item !== "object") continue;
-    // ClientTraffic schema: email, id, uuid, ip, total, up, down, lastOnline, enable, inboundId
-    // Online users from /panel/api/inbounds/onlines have: email, ip, total, id, inboundId
+    // 3x-ui /panel/api/inbounds/onlines returns objects with:
+    //   { id, ip, total } — NO email field!
+    // Older versions / clientStats responses include:
+    //   { email, id, ip, total, up, down, lastOnline, enable, inboundId }
     const email = item.email || "";
     const ip = item.ip || "";
     const id = item.id || item.uuid || "";
 
-    // Include if has email and (ip or lastOnline)
-    if (email && (ip || item.lastOnline)) {
-      const key = email + ":" + ip;
+    // Include if has at least an IP and an identifier (email OR id).
+    // Previously required email, which silently dropped ALL entries
+    // from the /inbounds/onlines endpoint (which never has email).
+    if (ip && (email || id)) {
+      const key = (email || id) + ":" + ip;
       if (seen.has(key)) continue;
       seen.add(key);
 
@@ -5069,7 +5095,9 @@ function extractOnlineUsers(response) {
 
       if (isOnline) {
         users.push({
-          email: email,
+          // Fall back to id if email is missing — display shows
+          // "<email> — <ip>" when email exists, or "<id> — <ip>" otherwise.
+          email: email || id,
           id: id,
           ip: ip,
           total: Number(item.total || 0),
