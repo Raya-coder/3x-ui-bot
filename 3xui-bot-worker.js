@@ -50,28 +50,42 @@ const STATE_REG_PREFIX = "reg:";
 const STATE_ADDPANEL_PREFIX = "addpanel:";
 const STATE_RENEW_PREFIX = "reg:renew:";
 
-// 3x-ui API paths
+// 3x-ui API paths — updated for 3x-ui v3.4.x (the version user is running).
+// Source: internal/web/controller/*.go from MHSanaei/3x-ui (commit 3.4.2).
+//
+// Major changes from older 3x-ui versions:
+// - /panel/api/setting/all is now POST (was GET)
+// - /panel/api/setting/apiTokens is the new dedicated endpoint for listing
+//   API tokens (was /panel/api/api-tokens/list which 404'd on user's panel)
+// - /panel/api/setting/restartPanel replaces /panel/api/server/restartPanel
+// - /panel/api/clients/onlines (POST) replaces /panel/api/inbounds/onlines
+// - /panel/api/server/logs/:count (POST) replaces /panel/api/server/getLogs
+// - /panel/api/server/getPanelUpdateInfo is now GET (was POST)
+// - /panel/api/users/* endpoints removed — panel users managed via /setting
 const API_PATHS = {
   LOGIN: "/login",
-  // Inbounds
+  // Inbounds (GET for reads, POST for writes — unchanged in v3.4.x)
   INBOUNDS_LIST: "/panel/api/inbounds/list",
   INBOUNDS_GET: "/panel/api/inbounds/get/",
   INBOUNDS_UPDATE: "/panel/api/inbounds/update/",
   INBOUNDS_ADD: "/panel/api/inbounds/add",
   INBOUNDS_DEL: "/panel/api/inbounds/del/",
+  // NOTE: INBOUNDS_ONLINE kept for backward compat, but v3.4.x uses
+  // CLIENTS_ONLINES instead. handleOnline tries both.
   INBOUNDS_ONLINE: "/panel/api/inbounds/onlines",
   INBOUNDS_RESET_TRAFFIC: "/panel/api/inbounds/resetAllTraffics",
-  // Clients
+  // Clients (v3.4.x)
   CLIENTS_LIST: "/panel/api/clients/list",
   CLIENTS_GET: "/panel/api/clients/get/",
   CLIENTS_ADD: "/panel/api/clients/add",
   CLIENTS_UPDATE: "/panel/api/clients/update/",
   CLIENTS_DEL: "/panel/api/clients/del/",
-  CLIENTS_RESET_TRAFFIC: "/panel/api/clients/reset_traffic/",
+  CLIENTS_RESET_TRAFFIC: "/panel/api/clients/resetTraffic/",  // renamed from reset_traffic in v3
   CLIENTS_IPS: "/panel/api/clients/ips/",
   CLIENTS_RENEW: "/panel/api/clients/renew/",
-  CLIENT_TRAFFIC: "/panel/api/client/traffic/",
+  CLIENT_TRAFFIC: "/panel/api/clients/traffic/",  // v3: /clients/traffic/:email (was /client/traffic/)
   CLIENTS_TRAFFICS: "/panel/api/clients/traffics",
+  CLIENTS_ONLINES: "/panel/api/clients/onlines",  // v3.4.x: replaces /inbounds/onlines
   // Nodes
   NODES_LIST: "/panel/api/nodes/list",
   NODES_ADD: "/panel/api/nodes/add",
@@ -84,43 +98,47 @@ const API_PATHS = {
   HOSTS_ADD: "/panel/api/hosts/add",
   HOSTS_UPDATE: "/panel/api/hosts/update/",
   HOSTS_DEL: "/panel/api/hosts/del/",
-  // Fallbacks
-  FALLBACKS_LIST: "/panel/api/fallbacks/list",
-  FALLBACKS_ADD: "/panel/api/fallbacks/add",
-  FALLBACKS_DEL: "/panel/api/fallbacks/del/",
-  // API Tokens
-  API_TOKENS_LIST: "/panel/api/api-tokens/list",
-  API_TOKENS_ADD: "/panel/api/api-tokens/add",
-  API_TOKENS_UPDATE: "/panel/api/api-tokens/update/",
-  API_TOKENS_DEL: "/panel/api/api-tokens/del/",
-  // Outbounds
-  OUTBOUNDS_LIST: "/panel/api/outbounds/list",
-  OUTBOUNDS_TRAFFICS: "/panel/api/outbounds/traffics",
-  // Server
+  // API Tokens (v3.4.x — moved under /setting)
+  API_TOKENS_LIST: "/panel/api/setting/apiTokens",          // GET (was POST /api-tokens/list)
+  API_TOKENS_ADD: "/panel/api/setting/apiTokens/create",    // POST
+  API_TOKENS_DEL: "/panel/api/setting/apiTokens/delete/",   // POST :id
+  API_TOKENS_SET_ENABLED: "/panel/api/setting/apiTokens/setEnabled/", // POST :id
+  // Outbounds (v3.4.x — under /xray)
+  OUTBOUNDS_LIST: "/panel/api/xray/getOutboundsTraffic",  // GET (was /outbounds/list)
+  OUTBOUNDS_TRAFFICS: "/panel/api/xray/getOutboundsTraffic",
+  // Server (v3.4.x)
   SERVER_STATUS: "/panel/api/server/status",
   SERVER_GET_DB: "/panel/api/server/getDb",
   SERVER_STOP_XRAY: "/panel/api/server/stopXrayService",
   SERVER_RESTART_XRAY: "/panel/api/server/restartXrayService",
-  SERVER_RESTART_PANEL: "/panel/api/server/restartPanel",
-  SERVER_GET_LOGS: "/panel/api/server/getLogs",
-  SERVER_PANEL_UPDATE: "/panel/api/server/getPanelUpdateInfo",
+  // NOTE: panel restart moved to /setting/restartPanel (POST)
+  SERVER_RESTART_PANEL: "/panel/api/setting/restartPanel",
+  // v3.4.x: /server/logs/:count (POST) replaces /server/getLogs (POST/GET)
+  SERVER_GET_LOGS: "/panel/api/server/logs/100",
+  SERVER_XRAY_LOGS: "/panel/api/server/xraylogs/100",
+  SERVER_PANEL_UPDATE: "/panel/api/server/getPanelUpdateInfo",  // GET in v3.4.x (was POST)
   SERVER_GET_XRAY_VERSION: "/panel/api/server/getXrayVersion",
-  SERVER_UPDATE_XRAY: "/panel/api/server/updateXray/",
+  SERVER_UPDATE_XRAY: "/panel/api/server/installXray/",  // v3: installXray replaces updateXray
   SERVER_INSTALL_XRAY: "/panel/api/server/installXray/",
-  // Settings
+  // Settings (v3.4.x — all POST now)
   SETTINGS_ALL: "/panel/api/setting/all",
   SETTINGS_UPDATE: "/panel/api/setting/update",
-  // Users (panel users)
+  SETTINGS_UPDATE_USER: "/panel/api/setting/updateUser",  // v3: panel user management
+  SETTINGS_RESTART_PANEL: "/panel/api/setting/restartPanel",
+  // Users (panel users) — REMOVED in v3.4.x; managed via /setting/updateUser
+  // Kept for backward compat with older panels; will 404 on v3.4.x
   USERS_LIST: "/panel/api/users/list",
   USERS_ADD: "/panel/api/users/add",
   USERS_DEL: "/panel/api/users/del/",
   // Database
   DATABASE_BACKUP: "/panel/api/server/getDb",
-  DATABASE_RESTORE: "/panel/api/server/importDb",
+  DATABASE_RESTORE: "/panel/api/server/importDB",
 };
 
 const PANEL_VERSION_PATHS = [
-  { path: "/panel/api/server/getPanelUpdateInfo", method: "POST" },
+  // v3.4.x: getPanelUpdateInfo is GET (was POST in older versions)
+  { path: "/panel/api/server/getPanelUpdateInfo", method: "GET" },
+  { path: "/panel/api/server/getPanelUpdateInfo", method: "POST" },  // fallback for older versions
   { path: "/panel/api/panel/version", method: "GET" },
   { path: "/panel/api/version", method: "GET" },
   { path: "/panel/api/server/version", method: "GET" },
@@ -1148,7 +1166,7 @@ async function resolveSubConfig(panel, env) {
 
   // 3. Fetch settings
   try {
-    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "POST");
     const obj = settings?.obj || settings;
     const subEnable = obj?.subEnable !== false;
     const subDomain = String(obj?.subDomain || "").trim();
@@ -3023,11 +3041,15 @@ async function restartPanel(panel) {
 }
 
 async function getServerLogs(panel) {
-  // Try multiple log endpoint paths. Different 3x-ui versions and forks
-  // expose logs at different paths.
+  // Try multiple log endpoint paths. Different 3x-ui versions expose logs
+  // at different paths.
+  // v3.4.x: /panel/api/server/logs/:count (POST) and /panel/api/server/xraylogs/:count (POST)
+  // Older: /panel/api/server/getLogs (POST/GET)
   const candidates = [
-    { path: API_PATHS.SERVER_GET_LOGS,           method: "POST" }, // /panel/api/server/getLogs POST (newer 3x-ui)
-    { path: API_PATHS.SERVER_GET_LOGS,           method: "GET"  }, // same path, GET (some forks)
+    { path: API_PATHS.SERVER_GET_LOGS,           method: "POST" }, // v3.4.x: /server/logs/100
+    { path: API_PATHS.SERVER_XRAY_LOGS,          method: "POST" }, // v3.4.x: /server/xraylogs/100
+    { path: "/panel/api/server/getLogs",         method: "POST" }, // older 3x-ui
+    { path: "/panel/api/server/getLogs",         method: "GET"  }, // some forks
     { path: "/panel/api/server/getXrayLogs",     method: "POST" }, // alternate name
     { path: "/panel/api/server/getXrayLogs",     method: "GET"  },
     { path: "/panel/api/server/logs",            method: "GET"  }, // shorter alias
@@ -3144,7 +3166,7 @@ async function listApiTokens(panel) {
   // In newer 3x-ui versions, settings response includes `obj.apiTokens`
   // array with fields: { id, name, token, expireAt, lastUseAt }.
   try {
-    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "POST");
     const obj = settings?.obj || settings;
     const tokensFromSettings = obj?.apiTokens || obj?.api_tokens || [];
     if (Array.isArray(tokensFromSettings) && tokensFromSettings.length) {
@@ -3327,7 +3349,7 @@ function extractOutboundTrafficsFromResponse(response) {
 // ─── Settings Management ──────────────────────────────────────
 
 async function getAllSettings(panel) {
-  const response = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+  const response = await panelApi(panel, API_PATHS.SETTINGS_ALL, "POST");
   return response?.obj || response || null;
 }
 
@@ -3351,7 +3373,7 @@ async function listPanelUsers(panel) {
   // In newer 3x-ui versions, settings response includes `obj.authConfigs`
   // array with fields: { id, username, password, loginSecret }.
   try {
-    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "POST");
     const obj = settings?.obj || settings;
     const usersFromSettings = obj?.authConfigs || obj?.auth_configs || obj?.users || [];
     if (Array.isArray(usersFromSettings) && usersFromSettings.length) {
@@ -3454,11 +3476,13 @@ async function stopXray(panel) {
 }
 
 async function updateXray(panel, version) {
+  // v3.4.x: POST /panel/api/server/installXray/:version (version in URL path)
+  // Older: POST /panel/api/server/updateXray/:version
   try {
-    return await panelApi(panel, `/panel/api/server/updateXray/${encodeURIComponent(version)}`, "POST");
+    return await panelApi(panel, `/panel/api/server/installXray/${encodeURIComponent(version)}`, "POST");
   } catch {
     try {
-      return await panelApi(panel, "/panel/api/server/installXray/", "POST", { version });
+      return await panelApi(panel, `/panel/api/server/updateXray/${encodeURIComponent(version)}`, "POST");
     } catch {
       throw new Error("Xray update failed");
     }
@@ -5459,14 +5483,27 @@ async function handleOnline(chatId, args, env) {
       let source = "";
       let triedEndpoints = [];
 
-      // === Source 1: /panel/api/inbounds/onlines ===
+      // === Source 1: /panel/api/clients/onlines (POST) — v3.4.x ===
+      // v3.4.x moved online users from /inbounds/onlines to /clients/onlines
       try {
-        const onlineResponse = await panelApi(panel, API_PATHS.INBOUNDS_ONLINE, "GET");
+        const onlineResponse = await panelApi(panel, API_PATHS.CLIENTS_ONLINES, "POST");
         onlineUsers = extractOnlineUsers(onlineResponse);
-        triedEndpoints.push(`✅ /inbounds/onlines (${onlineUsers.length} users)`);
-        if (onlineUsers.length) source = "inbounds/onlines";
+        triedEndpoints.push(`✅ /clients/onlines (${onlineUsers.length} users)`);
+        if (onlineUsers.length) source = "clients/onlines";
       } catch (e) {
-        triedEndpoints.push(`❌ /inbounds/onlines: ${shortError(e).slice(0, 40)}`);
+        triedEndpoints.push(`❌ /clients/onlines: ${shortError(e).slice(0, 40)}`);
+      }
+
+      // === Source 1b: /panel/api/inbounds/onlines (GET) — older versions ===
+      if (!onlineUsers.length) {
+        try {
+          const onlineResponse = await panelApi(panel, API_PATHS.INBOUNDS_ONLINE, "GET");
+          onlineUsers = extractOnlineUsers(onlineResponse);
+          triedEndpoints.push(`✅ /inbounds/onlines (${onlineUsers.length} users)`);
+          if (onlineUsers.length) source = "inbounds/onlines";
+        } catch (e) {
+          triedEndpoints.push(`❌ /inbounds/onlines: ${shortError(e).slice(0, 40)}`);
+        }
       }
 
       // === Source 2: /panel/api/inbounds/list with clientStats[] ===
@@ -5617,19 +5654,23 @@ async function handlePanelTest(chatId, args, env) {
     return;
   }
 
-  // List of endpoints to test, with both GET and POST
+  // List of endpoints to test, with both GET and POST.
+  // Updated for 3x-ui v3.4.x — methods ordered by what version expects first.
   const endpoints = [
-    { name: "Server Status",     path: API_PATHS.SERVER_STATUS,         methods: ["GET", "POST"] },
-    { name: "Inbounds List",     path: API_PATHS.INBOUNDS_LIST,         methods: ["GET", "POST"] },
-    { name: "Inbounds Onlines",  path: API_PATHS.INBOUNDS_ONLINE,       methods: ["GET", "POST"] },
-    { name: "Clients List",      path: API_PATHS.CLIENTS_LIST,          methods: ["GET", "POST"] },
-    { name: "Server Logs",       path: API_PATHS.SERVER_GET_LOGS,       methods: ["POST", "GET"] },
-    { name: "Panel Update Info", path: API_PATHS.SERVER_PANEL_UPDATE,   methods: ["POST", "GET"] },
-    { name: "Xray Version",      path: API_PATHS.SERVER_GET_XRAY_VERSION, methods: ["GET", "POST"] },
-    { name: "Settings All",      path: API_PATHS.SETTINGS_ALL,          methods: ["GET", "POST"] },
-    { name: "API Tokens List",   path: API_PATHS.API_TOKENS_LIST,       methods: ["GET", "POST"] },
-    { name: "Panel Users List",  path: API_PATHS.USERS_LIST,            methods: ["GET", "POST"] },
-    { name: "Nodes List",        path: API_PATHS.NODES_LIST,            methods: ["GET", "POST"] },
+    { name: "Server Status",       path: API_PATHS.SERVER_STATUS,           methods: ["GET", "POST"] },
+    { name: "Inbounds List",       path: API_PATHS.INBOUNDS_LIST,           methods: ["GET", "POST"] },
+    { name: "Clients Onlines v3",  path: API_PATHS.CLIENTS_ONLINES,         methods: ["POST", "GET"] },  // v3.4.x
+    { name: "Inbounds Onlines old",path: API_PATHS.INBOUNDS_ONLINE,         methods: ["GET", "POST"] },  // older
+    { name: "Clients List",        path: API_PATHS.CLIENTS_LIST,            methods: ["GET", "POST"] },
+    { name: "Server Logs v3",      path: API_PATHS.SERVER_GET_LOGS,         methods: ["POST", "GET"] },  // v3.4.x: /server/logs/100
+    { name: "Xray Logs v3",        path: API_PATHS.SERVER_XRAY_LOGS,        methods: ["POST", "GET"] },  // v3.4.x: /server/xraylogs/100
+    { name: "Panel Update Info",   path: API_PATHS.SERVER_PANEL_UPDATE,     methods: ["GET", "POST"] },  // v3.4.x: GET
+    { name: "Xray Version",        path: API_PATHS.SERVER_GET_XRAY_VERSION, methods: ["GET", "POST"] },
+    { name: "Settings All",        path: API_PATHS.SETTINGS_ALL,            methods: ["POST", "GET"] },  // v3.4.x: POST
+    { name: "API Tokens v3",       path: API_PATHS.API_TOKENS_LIST,         methods: ["GET", "POST"] },  // v3.4.x: /setting/apiTokens GET
+    { name: "Panel Users (old)",   path: API_PATHS.USERS_LIST,              methods: ["GET", "POST"] },  // removed in v3.4.x
+    { name: "Nodes List",          path: API_PATHS.NODES_LIST,              methods: ["GET", "POST"] },
+    { name: "Restart Panel v3",    path: API_PATHS.SETTINGS_RESTART_PANEL,  methods: ["POST"] },          // v3.4.x: /setting/restartPanel
   ];
 
   for (const panel of targetPanels) {
