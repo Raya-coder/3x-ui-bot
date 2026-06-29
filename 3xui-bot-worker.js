@@ -2848,11 +2848,40 @@ async function restartPanel(panel) {
 }
 
 async function getServerLogs(panel) {
-  // 3x-ui registers /panel/api/server/getLogs as POST, not GET.
-  // Using GET here returns 404. Use POST.
-  // The caller (panel_logs: callback handler) wraps this in try/catch
-  // and shows `shortError(error)` to the admin.
-  return await panelApi(panel, API_PATHS.SERVER_GET_LOGS, "POST");
+  // Try multiple log endpoint paths. Different 3x-ui versions and forks
+  // expose logs at different paths.
+  const candidates = [
+    { path: API_PATHS.SERVER_GET_LOGS,           method: "POST" }, // /panel/api/server/getLogs POST (newer 3x-ui)
+    { path: API_PATHS.SERVER_GET_LOGS,           method: "GET"  }, // same path, GET (some forks)
+    { path: "/panel/api/server/getXrayLogs",     method: "POST" }, // alternate name
+    { path: "/panel/api/server/getXrayLogs",     method: "GET"  },
+    { path: "/panel/api/server/logs",            method: "GET"  }, // shorter alias
+    { path: "/panel/api/server/log",             method: "GET"  }, // very short
+    { path: "/panel/api/xray/getLogs",           method: "GET"  }, // under /xray/
+    { path: "/panel/api/xray/logs",              method: "GET"  },
+  ];
+
+  let lastError = null;
+  for (const c of candidates) {
+    try {
+      const result = await panelApi(panel, c.path, c.method);
+      // Accept any non-empty response — caller (panel_logs: handler)
+      // will extract log lines from it.
+      if (result) return result;
+    } catch (e) {
+      lastError = e;
+      // Continue trying next candidate — different versions register
+      // different paths, so a 404 here doesn't mean the panel is broken.
+    }
+  }
+
+  // None of the log endpoints worked. Throw a descriptive error so the
+  // admin sees a helpful message instead of just "404".
+  throw new Error(
+    `این نسخه از 3x-ui لاگ سرور را از طریق API ارائه نمی‌دهد. ` +
+    `${candidates.length} مسیر مختلف تست شد. ` +
+    `برای مشاهده لاگ‌ها، وارد پنل 3x-ui شوید. `
+  );
 }
 
 async function addInbound(panel, inboundData) {
@@ -2927,8 +2956,35 @@ function extractNodesFromResponse(response) {
 // ─── API Tokens Management ────────────────────────────────────
 
 async function listApiTokens(panel) {
-  const response = await panelApi(panel, API_PATHS.API_TOKENS_LIST, "GET");
-  return extractApiTokensFromResponse(response);
+  // Try the dedicated endpoint first.
+  try {
+    const response = await panelApi(panel, API_PATHS.API_TOKENS_LIST, "GET");
+    const tokens = extractApiTokensFromResponse(response);
+    if (tokens.length) return tokens;
+  } catch (e) {
+    // 404 expected on some 3x-ui versions — fall through to settings fallback.
+  }
+
+  // Fallback: extract API tokens from /panel/api/setting/all.
+  // In newer 3x-ui versions, settings response includes `obj.apiTokens`
+  // array with fields: { id, name, token, expireAt, lastUseAt }.
+  try {
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const obj = settings?.obj || settings;
+    const tokensFromSettings = obj?.apiTokens || obj?.api_tokens || [];
+    if (Array.isArray(tokensFromSettings) && tokensFromSettings.length) {
+      return tokensFromSettings.map((t, i) => ({
+        id: t.id ?? i + 1,
+        name: t.name || `Token ${i + 1}`,
+        token: t.token || t.key || "",
+        enabled: t.enabled !== false,
+        createdAt: t.createdAt || 0,
+        expireAt: t.expireAt || 0,
+      }));
+    }
+  } catch { /* settings also unavailable */ }
+
+  return [];
 }
 
 async function addApiToken(panel, tokenData) {
@@ -3107,8 +3163,32 @@ async function updateSetting(panel, key, value) {
 // ─── Panel Users Management ───────────────────────────────────
 
 async function listPanelUsers(panel) {
-  const response = await panelApi(panel, API_PATHS.USERS_LIST, "GET");
-  return extractPanelUsersFromResponse(response);
+  // Try the dedicated endpoint first.
+  try {
+    const response = await panelApi(panel, API_PATHS.USERS_LIST, "GET");
+    const users = extractPanelUsersFromResponse(response);
+    if (users.length) return users;
+  } catch (e) {
+    // 404 expected on some 3x-ui versions — fall through to settings fallback.
+  }
+
+  // Fallback: extract panel users from /panel/api/setting/all.
+  // In newer 3x-ui versions, settings response includes `obj.authConfigs`
+  // array with fields: { id, username, password, loginSecret }.
+  try {
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const obj = settings?.obj || settings;
+    const usersFromSettings = obj?.authConfigs || obj?.auth_configs || obj?.users || [];
+    if (Array.isArray(usersFromSettings) && usersFromSettings.length) {
+      return usersFromSettings.map((u, i) => ({
+        id: u.id ?? i + 1,
+        username: u.username || u.loginSecret || `User ${i + 1}`,
+        hasPassword: Boolean(u.password),
+      }));
+    }
+  } catch { /* settings also unavailable */ }
+
+  return [];
 }
 
 async function addPanelUser(panel, userData) {
@@ -4210,6 +4290,11 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
 
+    if (command === "paneltest" && admin) {
+      await handlePanelTest(chatId, args, env);
+      return;
+    }
+
     if (command === "report" && admin) {
       await sendDailyReportAllPanels(env);
       await sendTelegram(chatId, "📊 گزارش روزانه ارسال شد.", env);
@@ -5022,39 +5107,229 @@ async function handleOnline(chatId, args, env) {
   const panels = await getPanels(env);
   for (const panel of panels) {
     try {
-      // Get online users from /panel/api/inbounds/onlines endpoint
+      // Strategy: try multiple sources in order, combine results.
+      // 1) /panel/api/inbounds/onlines  — list of {id, ip, total} (newer 3x-ui)
+      // 2) /panel/api/inbounds/list      — has clientStats[].lastOnline for isOnline check
+      // 3) /panel/api/server/status     — has xray.onlines count (last resort)
       let onlineUsers = [];
+      let onlineCount = 0;
+      let source = "";
+      let triedEndpoints = [];
+
+      // === Source 1: /panel/api/inbounds/onlines ===
       try {
         const onlineResponse = await panelApi(panel, API_PATHS.INBOUNDS_ONLINE, "GET");
         onlineUsers = extractOnlineUsers(onlineResponse);
-      } catch { /* try fallback */ }
+        triedEndpoints.push(`✅ /inbounds/onlines (${onlineUsers.length} users)`);
+        if (onlineUsers.length) source = "inbounds/onlines";
+      } catch (e) {
+        triedEndpoints.push(`❌ /inbounds/onlines: ${shortError(e).slice(0, 40)}`);
+      }
 
-      // Fallback: get count from server status
+      // === Source 2: /panel/api/inbounds/list with clientStats[] ===
+      // Each inbound has clientStats[] with { email, lastOnline, ... }
+      // A client is considered "online" if lastOnline is within last 2 min.
       if (!onlineUsers.length) {
-        const status = await getServerStatus(panel);
-        const obj = status?.obj || status;
-        const onlineCount = Number(obj?.xray?.onlines || obj?.onlines || obj?.onlineCount || 0);
-        await sendTelegram(chatId, `🟢 کاربران آنلاین ${panel.name}: ${onlineCount} نفر`, env, [
+        try {
+          const inboundsResponse = await panelApi(panel, API_PATHS.INBOUNDS_LIST, "GET");
+          const onlineFromStats = extractOnlineFromInboundsList(inboundsResponse);
+          triedEndpoints.push(`✅ /inbounds/list clientStats (${onlineFromStats.length} online)`);
+          if (onlineFromStats.length) {
+            onlineUsers = onlineFromStats;
+            source = "inbounds/list (clientStats)";
+          }
+        } catch (e) {
+          triedEndpoints.push(`❌ /inbounds/list: ${shortError(e).slice(0, 40)}`);
+        }
+      }
+
+      // === Source 3: /panel/api/server/status (extract count only) ===
+      if (!onlineUsers.length) {
+        try {
+          const status = await panelApi(panel, API_PATHS.SERVER_STATUS, "GET");
+          const obj = status?.obj || status;
+          const count = Number(obj?.xray?.onlines || obj?.onlines || obj?.onlineCount || 0);
+          if (count > 0) {
+            onlineCount = count;
+            source = "server/status";
+            triedEndpoints.push(`✅ /server/status (count=${count})`);
+          } else {
+            triedEndpoints.push(`⚠️ /server/status (no onlines field)`);
+          }
+        } catch (e) {
+          triedEndpoints.push(`❌ /server/status: ${shortError(e).slice(0, 40)}`);
+        }
+      }
+
+      // === Render result ===
+      if (onlineUsers.length) {
+        let msg = `🟢 کاربران آنلاین ${panel.name} (${onlineUsers.length} نفر):\n\n`;
+        for (const user of onlineUsers.slice(0, 30)) {
+          msg += `• ${user.email || user.id || "نامشخص"} — ${user.ip || "IP نامشخص"}\n`;
+        }
+        if (onlineUsers.length > 30) {
+          msg += `\n... و ${onlineUsers.length - 30} کاربر دیگر`;
+        }
+        await sendTelegram(chatId, msg, env, [
           [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
-        continue;
+      } else if (onlineCount > 0) {
+        await sendTelegram(chatId, `🟢 کاربران آنلاین ${panel.name}: ${onlineCount} نفر\n\n💡 منبع: ${source}\nℹ️ لیست دقیق از سرور قابل دریافت نیست.`, env, [
+          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+        ]);
+      } else {
+        // All endpoints failed or returned empty — show diagnostic info
+        let msg = `🟢 کاربران آنلاین ${panel.name}\n\n❌ نتایج از هیچ منبعی دریافت نشد.\n\n📋 endpoints تست شده:\n`;
+        for (const t of triedEndpoints) msg += `${t}\n`;
+        msg += `\n💡 برای تشخیص کامل‌تر، /paneltest را بزنید.`;
+        await sendTelegram(chatId, msg, env, [
+          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+        ]);
       }
-
-      let msg = `🟢 کاربران آنلاین ${panel.name} (${onlineUsers.length} نفر):\n\n`;
-      for (const user of onlineUsers.slice(0, 30)) {
-        msg += `• ${user.email || user.id || "نامشخص"} — ${user.ip || "IP نامشخص"}\n`;
-      }
-      if (onlineUsers.length > 30) {
-        msg += `\n... و ${onlineUsers.length - 30} کاربر دیگر`;
-      }
-      await sendTelegram(chatId, msg, env, [
-        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-      ]);
     } catch (error) {
       await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
         [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
     }
+  }
+}
+
+// Parse /panel/api/inbounds/list response and extract online clients.
+// Each inbound has clientStats[] with { email, lastOnline, ... }
+// A client is considered "online" if lastOnline is within last 2 minutes.
+function extractOnlineFromInboundsList(response) {
+  const users = [];
+  if (!response) return users;
+  const flat = flattenCandidates(response);
+  const seen = new Set();
+  const now = Date.now();
+  const ONLINE_WINDOW_MS = 2 * 60 * 1000; // 2 minutes
+
+  for (const item of flat) {
+    if (!item || typeof item !== "object") continue;
+    // Look for clientStats array (could be nested under any inbound object)
+    const statsArrays = [
+      item.clientStats, item.client_stats, item.stats,
+      item.traffic, item.trafficStats, item.traffic_stats,
+    ].filter((v) => Array.isArray(v));
+
+    for (const stats of statsArrays) {
+      for (const stat of stats) {
+        if (!stat || typeof stat !== "object") continue;
+        const email = stat.email || stat.clientEmail || "";
+        const id = stat.id || stat.uuid || "";
+        const ip = stat.ip || "";
+        if (!email && !id) continue;
+
+        const lastOnline = Number(stat.lastOnline || 0);
+        if (lastOnline <= 0) continue; // never online
+
+        // lastOnline might be in seconds or milliseconds
+        const lastOnlineMs = lastOnline < 1e12 ? lastOnline * 1000 : lastOnline;
+        if ((now - lastOnlineMs) > ONLINE_WINDOW_MS) continue; // not online now
+
+        const key = (email || id) + ":" + ip;
+        if (seen.has(key)) continue;
+        seen.add(key);
+
+        users.push({
+          email: email || id,
+          id,
+          ip,
+          total: Number(stat.total || 0),
+          up: Number(stat.up || 0),
+          down: Number(stat.down || 0),
+          inboundId: item.id || "",
+          lastOnline,
+        });
+      }
+    }
+  }
+  return users;
+}
+
+// ─── Panel Endpoint Diagnostics (/paneltest) ──────────────────
+// Tests all major panel endpoints with method-swap and reports results.
+// This helps the admin see WHICH endpoints their panel version supports
+// and what HTTP status each returns — crucial for diagnosing "404 everywhere"
+// issues without server access.
+async function handlePanelTest(chatId, args, env) {
+  const panels = await getPanels(env);
+  const targetPanelId = args[0] || null;
+  const targetPanels = targetPanelId
+    ? panels.filter((p) => p.id === targetPanelId)
+    : panels;
+
+  if (!targetPanels.length) {
+    await sendTelegram(chatId, `❌ پنل یافت نشد. استفاده: /paneltest [panelId]`, env);
+    return;
+  }
+
+  // List of endpoints to test, with both GET and POST
+  const endpoints = [
+    { name: "Server Status",     path: API_PATHS.SERVER_STATUS,         methods: ["GET", "POST"] },
+    { name: "Inbounds List",     path: API_PATHS.INBOUNDS_LIST,         methods: ["GET", "POST"] },
+    { name: "Inbounds Onlines",  path: API_PATHS.INBOUNDS_ONLINE,       methods: ["GET", "POST"] },
+    { name: "Clients List",      path: API_PATHS.CLIENTS_LIST,          methods: ["GET", "POST"] },
+    { name: "Server Logs",       path: API_PATHS.SERVER_GET_LOGS,       methods: ["POST", "GET"] },
+    { name: "Panel Update Info", path: API_PATHS.SERVER_PANEL_UPDATE,   methods: ["POST", "GET"] },
+    { name: "Xray Version",      path: API_PATHS.SERVER_GET_XRAY_VERSION, methods: ["GET", "POST"] },
+    { name: "Settings All",      path: API_PATHS.SETTINGS_ALL,          methods: ["GET", "POST"] },
+    { name: "API Tokens List",   path: API_PATHS.API_TOKENS_LIST,       methods: ["GET", "POST"] },
+    { name: "Panel Users List",  path: API_PATHS.USERS_LIST,            methods: ["GET", "POST"] },
+    { name: "Nodes List",        path: API_PATHS.NODES_LIST,            methods: ["GET", "POST"] },
+  ];
+
+  for (const panel of targetPanels) {
+    let msg = `🧪 تست پنل: ${panel.name}\n`;
+    msg += `🌐 URL: ${panel.panelUrl}\n`;
+    msg += `🔑 Auth: ${panel.authType || "bearer"}\n`;
+    msg += `📍 Prefix: ${panel.apiPrefix || "(none)"}\n\n`;
+    msg += `📋 نتایج:\n`;
+
+    for (const ep of endpoints) {
+      let result = "❓";
+      let detail = "";
+
+      for (const method of ep.methods) {
+        try {
+          const response = await panelApi(panel, ep.path, method);
+          // Success — try to summarize what we got
+          const flat = flattenCandidates(response);
+          const itemCount = flat.filter((x) => x && typeof x === "object").length;
+          result = "✅";
+          detail = `${method} ${itemCount} items`;
+          break;
+        } catch (e) {
+          const errMsg = shortError(e);
+          if (errMsg.includes("404") || errMsg.includes("405")) {
+            result = "❌";
+            detail = `${method} 404`;
+            continue; // try next method
+          } else if (errMsg.includes("401") || errMsg.includes("403")) {
+            result = "🔒";
+            detail = `${method} auth denied`;
+            break;
+          } else {
+            result = "⚠️";
+            detail = `${method} ${errMsg.slice(0, 30)}`;
+            break;
+          }
+        }
+      }
+
+      msg += `${result} ${ep.name.padEnd(20)} ${detail}\n`;
+    }
+
+    msg += `\n💡 راهنما:\n`;
+    msg += `✅ کار می‌کند | ❌ پنل این endpoint را ندارد | 🔒 توکن دسترسی ندارد | ⚠️ خطای دیگر\n`;
+    msg += `\n💡 اگر endpoint‌ای ❌ شد، یعنی نسخه 3x-ui شما آن را پشتیبانی نمی‌کند.`;
+
+    // Telegram message limit
+    if (msg.length > 4000) msg = msg.slice(0, 3990) + "...";
+    await sendTelegram(chatId, msg, env, [
+      [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+    ]);
   }
 }
 
@@ -5499,6 +5774,7 @@ async function handleHelp(chatId, isAdmin, env) {
       `🔄 /xray_update <نسخه> — بروزرسانی Xray\n` +
       `📡 /panel_version — نسخه پنل\n` +
       `📡 /panel_update — بروزرسانی پنل\n\n` +
+      `🧪 /paneltest — تست اتصال به پنل و endpoint‌ها\n\n` +
       `🖥️ مدیریت پنل:\n` +
       `/addpanel — افزودن پنل\n` +
       `/dellpanel <آیدی> — حذف پنل\n` +
