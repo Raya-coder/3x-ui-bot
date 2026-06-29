@@ -438,8 +438,8 @@ async function handleMiniAppApi(request, env, path, method, url) {
           depleted: isClientDepleted(client),
         },
         panel: { id: panel.id, name: panel.name },
-        subLink: (client.subId || client.subid) && panel.subBaseUrl
-          ? buildSubLink(client.subId || client.subid, panel)
+        subLink: (client.subId || client.subid)
+          ? await buildSubLinkAsync(client.subId || client.subid, panel, env).catch(() => null)
           : null,
       });
     }
@@ -1117,6 +1117,92 @@ function buildSubLink(subId, panel) {
   return parts.join("/");
 }
 
+/**
+ * Resolve subscription base URL + subPath for a panel.
+ *
+ * Priority:
+ * 1. panel.subBaseUrl (explicitly set in panel config) — use as-is
+ * 2. KV-cached value from previous settings fetch (5 min TTL)
+ * 3. Fetch /panel/api/setting/all and derive:
+ *    - host: settings.subDomain (if set) OR hostname from panel.panelUrl
+ *    - port: settings.subPort (omit if 80/443/0)
+ *    - protocol: https if port=443, else http
+ *    - subPath: settings.subPath (stripped of slashes) — overrides panel.subPath
+ * Returns { baseUrl, subPath, subEnable } or null on failure.
+ */
+async function resolveSubConfig(panel, env) {
+  // 1. Explicit config
+  if (panel.subBaseUrl) {
+    const rawSubPath = String(panel.subPath ?? "sub").replace(/^\/+|\/+$/g, "");
+    return { baseUrl: String(panel.subBaseUrl).replace(/\/+$/, ""), subPath: rawSubPath || "sub", subEnable: true };
+  }
+
+  // 2. KV cache (5 min TTL)
+  const cacheKey = `subcfg:${panel.id}`;
+  try {
+    const cached = await kvGet(env, cacheKey);
+    if (cached && cached.baseUrl) {
+      return cached;
+    }
+  } catch { /* ignore */ }
+
+  // 3. Fetch settings
+  try {
+    const settings = await panelApi(panel, API_PATHS.SETTINGS_ALL, "GET");
+    const obj = settings?.obj || settings;
+    const subEnable = obj?.subEnable !== false;
+    const subDomain = String(obj?.subDomain || "").trim();
+    const subPort = Number(obj?.subPort || 0);
+    const settingsSubPath = String(obj?.subPath ?? panel.subPath ?? "sub").replace(/^\/+|\/+$/g, "");
+    const subPath = settingsSubPath || "sub";
+
+    // Derive host: subDomain if set, else hostname from panel URL
+    let host = subDomain;
+    if (!host) {
+      try {
+        const url = new URL(panel.panelUrl);
+        host = url.hostname;
+      } catch {
+        return null;
+      }
+    }
+
+    // Determine protocol:
+    // - If subCertFile is set → HTTPS (sub server uses TLS)
+    // - Else if subPort is 443 → HTTPS
+    // - Else → HTTP
+    const hasCert = Boolean(obj?.subCertFile);
+    const proto = hasCert || subPort === 443 ? "https" : "http";
+    const portPart = (subPort === 80 || subPort === 443 || subPort === 0) ? "" : `:${subPort}`;
+    const baseUrl = `${proto}://${host}${portPart}`;
+
+    const result = { baseUrl, subPath, subEnable };
+    // Cache for 5 minutes
+    try { await kvPut(env, cacheKey, result, 5 * 60 * 1000); } catch { /* ignore */ }
+    return result;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Build a subscription link, auto-deriving subBaseUrl from panel settings
+ * when not explicitly configured. Async version of buildSubLink.
+ */
+async function buildSubLinkAsync(subId, panel, env) {
+  const config = await resolveSubConfig(panel, env);
+  if (!config || !config.baseUrl) {
+    throw new Error("لینک اشتراک برای این سرور قابل ساخت نیست (subBaseUrl تنظیم نشده و تنظیمات پنل در دسترس نیست)");
+  }
+  const base = config.baseUrl;
+  const subPath = config.subPath;
+  const baseLastSegment = base.split("/").filter(Boolean).pop();
+  const parts = [base];
+  if (subPath && baseLastSegment !== subPath) parts.push(subPath);
+  parts.push(String(subId).replace(/^\/+|\/+$/g, ""));
+  return parts.join("/");
+}
+
 // ─── KV Storage Helpers (BOT_KV) ─────────────────────────────
 
 async function kvGet(env, key) {
@@ -1719,8 +1805,61 @@ async function getAdminRole(env, chatId) {
 }
 
 async function isSuperAdmin(env, chatId) {
+  // Env-configured admins (ADMIN_CHAT_IDS, panel adminChatIds) are always super.
+  const envAdmins = getGlobalAdminIds(env);
+  if (envAdmins.includes(String(chatId))) return true;
+
+  const config = parsePanelsConfigFromEnv(env);
+  if (Array.isArray(config.panelsRaw)) {
+    for (const panel of config.panelsRaw) {
+      for (const adminId of normalizeIdList(panel.adminChatIds)) {
+        if (String(adminId) === String(chatId)) return true;
+      }
+    }
+  }
+
+  // KV-stored role: only "admin" role is non-super. No role = super (default).
   const role = await getAdminRole(env, chatId);
-  return role && role.role === "super";
+  if (!role) return true; // no role stored → treat as super (env admin or first-time admin)
+  return role.role === "super";
+}
+
+/**
+ * Reject panel admins (non-super admins) from performing super-admin-only
+ * actions. Returns true if the action should be blocked (already answered
+ * the callback and sent a denial message); false if access is allowed.
+ *
+ * Usage in callback handlers:
+ *   if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+ */
+async function rejectIfNotSuper(chatId, callbackQueryId, env) {
+  const isSuper = await isSuperAdmin(env, chatId);
+  if (!isSuper) {
+    try { await answerCallbackQuery(callbackQueryId, env, "⛔ فقط سوپر ادمین"); } catch { /* ignore */ }
+    try {
+      await sendTelegram(chatId, "⛔ این گزینه فقط برای سوپر ادمین قابل دسترسی است.", env, [
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+      ]);
+    } catch { /* ignore */ }
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Same as rejectIfNotSuper but for command handlers (no callback query).
+ * Returns true if blocked.
+ *
+ * Usage in command handlers:
+ *   if (await rejectCommandIfNotSuper(chatId, env)) return;
+ */
+async function rejectCommandIfNotSuper(chatId, env) {
+  const isSuper = await isSuperAdmin(env, chatId);
+  if (!isSuper) {
+    await sendTelegram(chatId, "⛔ این دستور فقط برای سوپر ادمین قابل دسترسی است.", env);
+    return true;
+  }
+  return false;
 }
 
 async function getAdminPanelIds(env, chatId) {
@@ -1731,10 +1870,29 @@ async function getAdminPanelIds(env, chatId) {
 }
 
 async function getAdminCreatedCount(env, chatId) {
-  const keys = await kvList(env, KV_USERS_PREFIX);
-  let count = 0;
-  for (const key of keys) { const u = await kvGet(env, key); if (u && u.createdBy === String(chatId)) count++; }
-  return count;
+  // Count panel clients with comment "TG:<chatId>" — this is the actual
+  // source of truth for "users this admin created". The old implementation
+  // counted KV user records, but createClient() doesn't create KV records
+  // (only registerUser() does, which is for self-registration). So the old
+  // count was always 0 for admin-created users, making the maxUsers limit
+  // ineffective.
+  try {
+    const panels = await getPanels(env);
+    const myMarker = `TG:${String(chatId)}`;
+    let count = 0;
+    for (const panel of panels) {
+      try {
+        const clients = await listAllClients(panel);
+        for (const c of clients) {
+          const comment = String(c?.comment || "").trim();
+          if (comment === myMarker || comment.startsWith(myMarker + " ")) count++;
+        }
+      } catch { /* ignore panel errors */ }
+    }
+    return count;
+  } catch {
+    return 0;
+  }
 }
 
 async function addPanelAdmin(env, chatId, panelIds, maxUsers) {
@@ -2396,35 +2554,43 @@ async function getClientByIdentifier(identifier, env, panelId) {
 async function enrichClientTraffic(client, panel) {
   const identifier = getIdentifierFromClient(client);
 
-  // Always try to fetch fresh traffic data from inbound list
-  // This is the most reliable source in all 3x-ui versions
+  // Always fetch fresh traffic data from inbound list.
+  // This is the most reliable source in all 3x-ui versions.
+  // IMPORTANT: always overwrite client.up/down with the fresh sum from
+  // clientStats — the client object from /clients/get has no up/down,
+  // and any direct up/down on the object might be stale or wrong.
   try {
     const inboundsResponse = await panelApi(panel, API_PATHS.INBOUNDS_LIST, "GET");
     const trafficAndTotal = findTrafficInInbounds(inboundsResponse, identifier);
-    if (trafficAndTotal.up > 0 || trafficAndTotal.down > 0) {
-      client.up = trafficAndTotal.up;
-      client.down = trafficAndTotal.down;
-    }
-    // Also merge total traffic limit from clientStats if client doesn't have a positive total
-    // Note: totalGB = 0 means unlimited, so only set if client has no total at all
-    const hasExplicitTotal = client.totalGB !== undefined || client.total !== undefined;
-    if (trafficAndTotal.total > 0 && !hasExplicitTotal) {
+    // ALWAYS overwrite — fresh data from clientStats is authoritative
+    client.up = trafficAndTotal.up;
+    client.down = trafficAndTotal.down;
+
+    // If client has no positive totalGB (0 = unlimited), but clientStats
+    // has a positive total, use that. This handles edge cases where the
+    // /clients/get response didn't include totalGB but clientStats does.
+    const currentTotal = getClientTotalBytes(client);
+    if (currentTotal === 0 && trafficAndTotal.total > 0) {
       client.total = trafficAndTotal.total;
     }
-    // Also merge expiryTime from clientStats if client doesn't have it
-    // Note: expiryTime = 0 means unlimited, so only set if undefined
-    if (trafficAndTotal.expiryTime > 0 && client.expiryTime === undefined) {
+
+    // Same for expiryTime and enable — only set if missing
+    if (trafficAndTotal.expiryTime > 0 && (client.expiryTime === undefined || client.expiryTime === 0)) {
       client.expiryTime = trafficAndTotal.expiryTime;
     }
-    // Also merge enable status from clientStats
     if (trafficAndTotal.enable !== undefined && client.enable === undefined) {
       client.enable = trafficAndTotal.enable;
+    }
+
+    // Last online (for "online" indicator in formatClient)
+    if (trafficAndTotal.lastOnline > 0) {
+      client.lastOnline = trafficAndTotal.lastOnline;
     }
   } catch (error) {
     console.error(`enrichClientTraffic inbound list error for ${panel.name}:`, shortError(error));
   }
 
-  // Fallback: Try dedicated traffic API endpoint
+  // Fallback: Try dedicated traffic API endpoint if we still have no data
   const existingTraffic = getClientTraffic(client);
   if (existingTraffic.up === 0 && existingTraffic.down === 0) {
     try {
@@ -2453,6 +2619,9 @@ async function enrichClientTraffic(client, panel) {
 function findTrafficInInbounds(inboundsData, identifier) {
   let result = { up: 0, down: 0, total: 0, expiryTime: 0, enable: undefined, lastOnline: 0, uuid: "" };
   const seenInboundIds = new Set();
+  // Also dedupe by stat id + inbound id, in case the same stat appears twice
+  // (some 3x-ui forks return duplicate clientStats entries for the same client).
+  const seenStatKeys = new Set();
 
   // Handle various response formats
   const inbounds = extractInboundsArray(inboundsData);
@@ -2472,6 +2641,12 @@ function findTrafficInInbounds(inboundsData, identifier) {
         if (!stat || typeof stat !== "object") continue;
         const matches = sameIdentifier(stat.email, identifier) || sameIdentifier(stat.clientEmail, identifier);
         if (matches) {
+          // Dedupe by stat.id + inboundId to avoid double-counting duplicate
+          // clientStats entries that some 3x-ui forks return.
+          const statKey = `${stat.id ?? ""}:${stat.inboundId ?? inbound.id ?? ""}:${stat.email ?? ""}`;
+          if (seenStatKeys.has(statKey)) continue;
+          seenStatKeys.add(statKey);
+
           result.up += Number(stat.up || stat.upload || 0);
           result.down += Number(stat.down || stat.download || 0);
           // total is the same across inbounds for the same client — take the max
@@ -3383,6 +3558,11 @@ async function buildAdminClientButtons(chatId, client, panel, env) {
 
   const cb = async (action) => makeCallbackData(chatId, action, panel, identifier, env);
 
+  // Role check: panel admins only get create/renew/delete/addgb/full_stats/link buttons.
+  // Super admins get the full set including enable/disable/reset_traffic/ips.
+  const roleInfo = await getAdminRole(env, chatId);
+  const isSuper = !roleInfo || roleInfo.role === "super";
+
   /** @type {any[][]} */
   const buttons = [
     [
@@ -3392,22 +3572,33 @@ async function buildAdminClientButtons(chatId, client, panel, env) {
       { text: "➕ افزایش حجم", callback_data: await cb("addgb") },
       { text: "⏱ تمدید زمان", callback_data: await cb("renew") },
     ],
-    [
+  ];
+
+  if (isSuper) {
+    // Super admin only — these can disrupt service if misused by panel admins.
+    buttons.push([
       { text: "🔗 لینک اشتراک", callback_data: await cb("link") },
       { text: "🌐 IPهای کاربر", callback_data: await cb("ips") },
-    ],
-    [
+    ]);
+    buttons.push([
       { text: "♻️ ریست ترافیک", callback_data: await cb("reset_traffic") },
-    ],
-    [
+    ]);
+    buttons.push([
       enabled
         ? { text: "⛔ غیرفعال کردن", callback_data: await cb("disable") }
         : { text: "✅ فعال کردن", callback_data: await cb("enable") },
-    ],
-    [
-      { text: "🗑 حذف کاربر", callback_data: await cb("delete") },
-    ],
-  ];
+    ]);
+  } else {
+    // Panel admin still gets the subscription link (useful for giving to clients)
+    buttons.push([
+      { text: "🔗 لینک اشتراک", callback_data: await cb("link") },
+    ]);
+  }
+
+  // Both roles can delete users they have access to
+  buttons.push([
+    { text: "🗑 حذف کاربر", callback_data: await cb("delete") },
+  ]);
 
   return buttons;
 }
@@ -3968,22 +4159,44 @@ async function handleTelegramUpdate(update, env) {
             ]);
             return;
           }
+
+          // Check maxUsers limit for panel admins (interactive flow)
+          const role = await getAdminRole(env, chatId);
+          if (role && role.role === "admin") {
+            const cnt = await getAdminCreatedCount(env, chatId);
+            const mx = role.maxUsers || 0;
+            if (mx > 0 && cnt >= mx) {
+              await sendTelegram(chatId, `❌ محدودیت ساخت کاربر رسید (${cnt}/${mx}).\n💡 برای افزایش محدودیت با سوپر ادمین تماس بگیرید.`, env, [
+                [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+              ]);
+              return;
+            }
+          }
+
           await createClient(panel, createAction.email, createAction.days, gb, { adminChatId: chatId });
           const client = await getClientByIdentifier(createAction.email, env, createAction.panelId);
           const msg = `✅ کاربر "${createAction.email}" ساخته شد.\n📅 ${createAction.days} روز | 📦 ${gb > 0 ? gb + " GB" : "نامحدود"}\n🖥️ سرور: ${panel.name}`;
           const buttons = client ? await buildAdminClientButtons(chatId, client, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
           await sendTelegram(chatId, msg, env, buttons);
 
-          // Send QR if subscription link available
+          // Send subscription link + QR code
           try {
             const subId = client?.subId || client?.subid || "";
-            if (subId && panel.subBaseUrl) {
-              const subLink = buildSubLink(subId, panel);
-              await sendTelegram(chatId, `🔗 لینک اشتراک:\n${subLink}`, env, [
+            if (subId) {
+              const subLink = await buildSubLinkAsync(subId, panel, env);
+              const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(subLink)}`;
+              await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${subLink}`, env, [
                 [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
               ]);
             }
-          } catch { /* ignore */ }
+          } catch (e) {
+            // Sub link not available — send just the text message without QR
+            try {
+              await sendTelegram(chatId, `⚠️ لینک اشتراک در دسترس نیست: ${shortError(e)}`, env, [
+                [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+              ]);
+            } catch { /* ignore */ }
+          }
         } catch (error) {
           await sendTelegram(chatId, `❌ خطا در ساخت کاربر: ${shortError(error)}`, env, [
             [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
@@ -4281,88 +4494,105 @@ async function handleTelegramUpdate(update, env) {
     }
 
     if (command === "status" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleStatus(chatId, args, env);
       return;
     }
 
     if (command === "online" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleOnline(chatId, args, env);
       return;
     }
 
     if (command === "paneltest" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handlePanelTest(chatId, args, env);
       return;
     }
 
     if (command === "report" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await sendDailyReportAllPanels(env);
       await sendTelegram(chatId, "📊 گزارش روزانه ارسال شد.", env);
       return;
     }
 
     if (command === "versions" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleVersions(chatId, args, env);
       return;
     }
 
     if (command === "xray_restart" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleXrayRestart(chatId, args, env);
       return;
     }
 
     if (command === "xray_stop" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleXrayStop(chatId, args, env);
       return;
     }
 
     if (command === "xray_version" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleXrayVersionCmd(chatId, args, env);
       return;
     }
 
     if (command === "xray_update" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleXrayUpdate(chatId, args, env);
       return;
     }
 
     if (command === "panel_version" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handlePanelVersionCmd(chatId, args, env);
       return;
     }
 
     if (command === "panel_update" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handlePanelUpdateCmd(chatId, args, env);
       return;
     }
 
     if (command === "export" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleExportConfig(chatId, env);
       return;
     }
 
     if (command === "addpanel" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await startAddPanel(chatId, env);
       return;
     }
 
     if (command === "dellpanel" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleDeletePanel(chatId, args, env);
       return;
     }
 
     if (command === "panels" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleListPanels(chatId, env);
       return;
     }
 
     if (command === "backup" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       await handleBackup(chatId, args, env);
       return;
     }
 
     // ── Ban/Suspend (super admin) ──
     if (command === "ban" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /ban <chatId> [دلیل]", env); return; }
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان بن کرد", env); return; }
       const r = args.slice(1).join(" ") || "";
@@ -4372,6 +4602,7 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
     if (command === "unban" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unban <chatId>", env); return; }
       await unbanUser(env, t);
       await sendTelegram(chatId, `✅ "${t}" رفع بن شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
@@ -4379,6 +4610,7 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
     if (command === "suspend" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; const m = Number(args[1]);
       if (!t || !m || m<=0) { await sendTelegram(chatId, "استفاده: /suspend <chatId> <دقیقه> [دلیل]", env); return; }
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان تعلیق کرد", env); return; }
@@ -4389,12 +4621,14 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
     if (command === "unsuspend" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unsuspend <chatId>", env); return; }
       await unsuspendUser(env, t);
       await sendTelegram(chatId, `✅ تعلیق "${t}" لغو شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       return;
     }
     if (command === "bannedlist" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const b = await getBannedUsers(env);
       if (!b.length) { await sendTelegram(chatId, "✅ بن شده‌ای نیست.", env); return; }
       let m = `🚫 بن شده (${b.length}):\n\n`; for (const x of b) m += `• ${x.chatId} — ${x.reason||"-"}\n`;
@@ -4426,6 +4660,7 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
     if (command === "admins" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
       const list = await getAllAdminsWithRoles(env);
       let m = `👥 ادمین‌ها (${list.length}):\n\n`;
       for (const a of list) { m += `${a.role==="super"?"👑":"🛠️"} ${a.chatId} — ${a.role==="super"?"سوپر":"پنل"} — ${a.createdCount} کاربر${a.maxUsers>0?`/${a.maxUsers}`:""}\n`; }
@@ -4577,78 +4812,104 @@ async function handleRegistrationStep(chatId, regState, text, env) {
 // ─── Admin Menu (Interactive) ─────────────────────────────────
 
 async function sendAdminMenu(chatId, env) {
+  const roleInfo = await getAdminRole(env, chatId);
+  const isSuper = !roleInfo || roleInfo.role === "super";
+
   /** @type {any[][]} */
-  const buttons = [
-    [
-      { text: "📊 وضعیت سرورها", callback_data: "admin_status" },
-    ],
-    [
-      { text: "🔍 جستجوی کاربر", callback_data: "admin_search" },
-      { text: "👥 لیست کاربران", callback_data: "admin_clients" },
-    ],
-    [
-      { text: "➕ ساخت کاربر جدید", callback_data: "admin_create" },
-    ],
-    [
-      { text: "🖥️ مدیریت پنل‌ها", callback_data: "admin_panels" },
-      { text: "📦 مدیریت Inbound", callback_data: "admin_inbounds" },
-    ],
-    [
-      { text: "🌐 مدیریت Nodes", callback_data: "admin_nodes" },
-    ],
-    [
-      { text: "🔄 درخواست‌های تمدید", callback_data: "admin_renewals" },
-    ],
-    [
-      { text: "⚡ مدیریت Xray", callback_data: "admin_xray" },
-      { text: "🔄 ریستارت پنل", callback_data: "admin_panel_restart" },
-    ],
-    [
-      { text: "📦 بکاپ", callback_data: "admin_backup" },
-      { text: "📤 خروجی کانفیگ", callback_data: "admin_export" },
-    ],
-    [
-      { text: "📊 گزارش روزانه", callback_data: "admin_report" },
-      { text: "📋 لاگ سرور", callback_data: "admin_logs" },
-    ],
-    [
-      { text: "🟢 کاربران آنلاین", callback_data: "admin_online" },
-      { text: "📋 نسخه‌ها", callback_data: "admin_versions" },
-    ],
-    [
-      { text: "💾 بکاپ کاربران", callback_data: "admin_user_backups" },
-      { text: "🔑 توکن‌های API", callback_data: "admin_api_tokens" },
-    ],
-    [
-      { text: "📡 Outbounds", callback_data: "admin_outbounds" },
-      { text: "⚙️ تنظیمات پنل", callback_data: "admin_settings" },
-    ],
-    [
-      { text: "📤 ترافیک Outbound", callback_data: "admin_outbound_traffic" },
-      { text: "📥 ریست ترافیک Inbound", callback_data: "admin_reset_inbound_traffic" },
-    ],
-    [
-      { text: "🚫 بن/تعلیق", callback_data: "admin_ban_menu" },
-      { text: "👥 ادمین‌ها", callback_data: "admin_manage_admins" },
-    ],
-    [
-      { text: "📋 لاگ خطاها", callback_data: "admin_error_logs" },
-    ],
-  ];
+  let buttons = [];
+  let menuText = "";
+
+  if (isSuper) {
+    // ───── SUPER ADMIN — full menu ─────
+    menuText = "👑 پنل مدیریت سوپر ادمین";
+    buttons = [
+      [
+        { text: "📊 وضعیت سرورها", callback_data: "admin_status" },
+      ],
+      [
+        { text: "🔍 جستجوی کاربر", callback_data: "admin_search" },
+        { text: "👥 لیست کاربران", callback_data: "admin_clients" },
+      ],
+      [
+        { text: "➕ ساخت کاربر جدید", callback_data: "admin_create" },
+      ],
+      [
+        { text: "🖥️ مدیریت پنل‌ها", callback_data: "admin_panels" },
+        { text: "📦 مدیریت Inbound", callback_data: "admin_inbounds" },
+      ],
+      [
+        { text: "🌐 مدیریت Nodes", callback_data: "admin_nodes" },
+      ],
+      [
+        { text: "🔄 درخواست‌های تمدید", callback_data: "admin_renewals" },
+      ],
+      [
+        { text: "⚡ مدیریت Xray", callback_data: "admin_xray" },
+        { text: "🔄 ریستارت پنل", callback_data: "admin_panel_restart" },
+      ],
+      [
+        { text: "📦 بکاپ", callback_data: "admin_backup" },
+        { text: "📤 خروجی کانفیگ", callback_data: "admin_export" },
+      ],
+      [
+        { text: "📊 گزارش روزانه", callback_data: "admin_report" },
+        { text: "📋 لاگ سرور", callback_data: "admin_logs" },
+      ],
+      [
+        { text: "🟢 کاربران آنلاین", callback_data: "admin_online" },
+        { text: "📋 نسخه‌ها", callback_data: "admin_versions" },
+      ],
+      [
+        { text: "💾 بکاپ کاربران", callback_data: "admin_user_backups" },
+        { text: "🔑 توکن‌های API", callback_data: "admin_api_tokens" },
+      ],
+      [
+        { text: "📡 Outbounds", callback_data: "admin_outbounds" },
+        { text: "⚙️ تنظیمات پنل", callback_data: "admin_settings" },
+      ],
+      [
+        { text: "📤 ترافیک Outbound", callback_data: "admin_outbound_traffic" },
+        { text: "📥 ریست ترافیک Inbound", callback_data: "admin_reset_inbound_traffic" },
+      ],
+      [
+        { text: "🚫 بن/تعلیق", callback_data: "admin_ban_menu" },
+        { text: "👥 ادمین‌ها", callback_data: "admin_manage_admins" },
+      ],
+      [
+        { text: "📋 لاگ خطاها", callback_data: "admin_error_logs" },
+      ],
+    ];
+  } else {
+    // ───── PANEL ADMIN — limited menu ─────
+    // Per requirements: admin can ONLY create/renew/delete users.
+    // Server settings, logs, tokens, panels, nodes, inbounds, ban,
+    // backup, broadcast, restart — all SUPER ADMIN only.
+    const cnt = await getAdminCreatedCount(env, chatId);
+    const mx = roleInfo.maxUsers || 0;
+    menuText = "🛠️ پنل مدیریت ادمین";
+    menuText += `\n📊 کاربران ساخته‌شده: ${cnt}${mx > 0 ? "/" + mx : ""}`;
+    menuText += "\n💡 شما فقط می‌توانید کاربر بسازید، تمدید کنید یا حذف کنید.";
+
+    buttons = [
+      [
+        { text: "➕ ساخت کاربر جدید", callback_data: "admin_create" },
+      ],
+      [
+        { text: "👥 کاربران من", callback_data: "admin_clients" },
+        { text: "🔍 جستجوی کاربر", callback_data: "admin_search" },
+      ],
+      [
+        { text: "🔄 درخواست‌های تمدید", callback_data: "admin_renewals" },
+      ],
+    ];
+  }
+
   // Add support button if SUPPORT_USERNAME is configured
   const supportUser = getSupportUsername(env);
   if (supportUser) {
     buttons.push([{ text: "🎧 پشتیبانی", url: `https://t.me/${supportUser}` }]);
   }
-  const roleInfo = await getAdminRole(env, chatId);
-  const isSuper = !roleInfo || roleInfo.role === "super";
-  let menuText = isSuper ? "👑 پنل مدیریت سوپر ادمین" : "🛠️ پنل مدیریت";
-  if (!isSuper) {
-    const cnt = await getAdminCreatedCount(env, chatId);
-    const mx = roleInfo.maxUsers || 0;
-    menuText += `\n📊 کاربران: ${cnt}${mx>0?"/"+mx:""}`;
-  }
-  menuText += "\n👇 انتخاب کنید:";
+  menuText += "\n\n👇 انتخاب کنید:";
   await sendTelegram(chatId, menuText, env, buttons);
 }
 
@@ -4719,6 +4980,45 @@ async function sendCreateUserMenu(chatId, env) {
 
 // ─── Command Handlers ─────────────────────────────────────────
 
+/**
+ * Verify that the current admin (chatId) is allowed to act on a given client.
+ *
+ * - Super admin: always allowed.
+ * - Panel admin: allowed ONLY if they created the client (comment starts with "TG:<chatId>").
+ *
+ * Returns true if access is allowed; false (and sends a denial message) if not.
+ */
+async function adminCanAccessClient(chatId, client, env) {
+  const isSuper = await isSuperAdmin(env, chatId);
+  if (isSuper) return true;
+  const comment = String(client?.comment || "").trim();
+  const myMarker = `TG:${String(chatId)}`;
+  if (comment === myMarker || comment.startsWith(myMarker + " ")) return true;
+  await sendTelegram(chatId,
+    "⛔ شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.", env,
+    [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+  return false;
+}
+
+/**
+ * Same as adminCanAccessClient but for callback handlers — uses
+ * answerCallbackQuery for the denial popup.
+ */
+async function adminCanAccessClientCallback(chatId, client, callbackQueryId, env) {
+  const isSuper = await isSuperAdmin(env, chatId);
+  if (isSuper) return true;
+  const comment = String(client?.comment || "").trim();
+  const myMarker = `TG:${String(chatId)}`;
+  if (comment === myMarker || comment.startsWith(myMarker + " ")) return true;
+  await answerCallbackQuery(callbackQueryId, env, "⛔ دسترسی به این کاربر ندارید");
+  try {
+    await sendTelegram(chatId,
+      "⛔ شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.", env,
+      [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+  } catch { /* ignore */ }
+  return false;
+}
+
 async function handleSearch(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
@@ -4726,14 +5026,20 @@ async function handleSearch(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
+  // Panel admins: only see users they created (comment starts with "TG:<chatId>")
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری با شناسه "${identifier}" یافت نشد.`, env);
+    const msg = (searchRole && searchRole.role === "admin")
+      ? `❌ کاربری با شناسه "${identifier}" در لیست کاربران شما یافت نشد.`
+      : `❌ کاربری با شناسه "${identifier}" یافت نشد.`;
+    await sendTelegram(chatId, msg, env);
     return;
   }
   for (const { panel, client } of results) {
@@ -4762,6 +5068,9 @@ async function handleUser(chatId, args, env) {
     await sendTelegram(chatId, `❌ کاربری با شناسه "${identifier}" یافت نشد.`, env);
     return;
   }
+
+  // Access control: panel admins can only view users they created
+  if (!(await adminCanAccessClient(chatId, client, env))) return;
 
   const resolvedPanel = panel || (await searchClientAcrossPanels(identifier, env))[0]?.panel;
   if (!resolvedPanel) {
@@ -4823,11 +5132,14 @@ async function handleDelete(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
+  // Panel admins: only see users they created (comment starts with "TG:<chatId>")
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4852,11 +5164,13 @@ async function handleEnable(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4878,11 +5192,13 @@ async function handleDisable(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4909,11 +5225,13 @@ async function handleAddGB(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4939,11 +5257,13 @@ async function handleRenewAdmin(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4970,11 +5290,13 @@ async function handleLink(chatId, args, env) {
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
-  // Panel admins: only see their panels + users they created
   const searchRole = await getAdminRole(env, chatId);
   if (searchRole && searchRole.role === "admin") {
-    const allowed = searchRole.panelIds || [];
-    results = results.filter(r => allowed.includes(r.panel.id));
+    const myMarker = `TG:${String(chatId)}`;
+    results = results.filter(r => {
+      const comment = String(r.client?.comment || "").trim();
+      return comment === myMarker || comment.startsWith(myMarker + " ");
+    });
   }
   if (!results.length) {
     await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
@@ -4987,7 +5309,7 @@ async function handleLink(chatId, args, env) {
     return;
   }
   try {
-    const link = buildSubLink(subId, panel);
+    const link = await buildSubLinkAsync(subId, panel, env);
     const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
     await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env);
   } catch (error) {
@@ -5000,19 +5322,40 @@ async function handleClients(chatId, args, env) {
   const panels = await getPanels(env);
   const panel = panels[0]; // Default to first panel
 
+  // Role-based filtering:
+  // - Super admin: sees ALL panel clients
+  // - Panel admin: sees ONLY clients they created (comment starts with "TG:<chatId>")
+  const roleInfo = await getAdminRole(env, chatId);
+  const isSuper = !roleInfo || roleInfo.role === "super";
+
   try {
-    const clients = await listAllClients(panel);
+    let clients = await listAllClients(panel);
+
+    if (!isSuper) {
+      // Filter to only clients this admin created.
+      // createClient sets comment to "TG:<adminChatId>" when called via the bot.
+      const myMarker = `TG:${String(chatId)}`;
+      clients = clients.filter((c) => {
+        const comment = String(c?.comment || "").trim();
+        return comment === myMarker || comment.startsWith(myMarker + " ");
+      });
+    }
+
     const start = (page - 1) * PER_PAGE;
     const end = start + PER_PAGE;
     const pageClients = clients.slice(start, end);
-    const totalPages = Math.ceil(clients.length / PER_PAGE);
+    const totalPages = Math.max(1, Math.ceil(clients.length / PER_PAGE));
 
     if (!pageClients.length) {
-      await sendTelegram(chatId, "❌ کاربری یافت نشد.", env);
+      const msg = isSuper
+        ? "❌ کاربری یافت نشد."
+        : "❌ شما هنوز هیچ کاربری نساخته‌اید.\n💡 از منو، «➕ ساخت کاربر جدید» را بزنید.";
+      await sendTelegram(chatId, msg, env);
       return;
     }
 
-    let msg = `👥 لیست کاربران (صفحه ${page}/${totalPages}):\n\n`;
+    const title = isSuper ? "👥 لیست کاربران" : "👥 کاربران من";
+    let msg = `${title} (صفحه ${page}/${totalPages}):\n\n`;
     for (const client of pageClients) {
       const traffic = getClientTraffic(client);
       const totalBytes = getClientTotalBytes(client);
@@ -5165,7 +5508,16 @@ async function handleOnline(chatId, args, env) {
       if (onlineUsers.length) {
         let msg = `🟢 کاربران آنلاین ${panel.name} (${onlineUsers.length} نفر):\n\n`;
         for (const user of onlineUsers.slice(0, 30)) {
-          msg += `• ${user.email || user.id || "نامشخص"} — ${user.ip || "IP نامشخص"}\n`;
+          const name = user.email || user.id || "نامشخص";
+          // Show IP only if present — /inbounds/list clientStats doesn't
+          // include IPs (only /inbounds/onlines does, which is 404 on
+          // many panel versions). Show "— no IP" only when caller expects
+          // IP but it's missing.
+          if (user.ip) {
+            msg += `• ${name} — ${user.ip}\n`;
+          } else {
+            msg += `• ${name}\n`;
+          }
         }
         if (onlineUsers.length > 30) {
           msg += `\n... و ${onlineUsers.length - 30} کاربر دیگر`;
@@ -5752,41 +6104,69 @@ async function handleExportConfig(chatId, env) {
 
 async function handleHelp(chatId, isAdmin, env) {
   if (isAdmin) {
-    const msg =
-      `📖 دستورات ادمین:\n\n` +
-      `🔍 /search <شناسه> — جستجوی کاربر\n` +
-      `👤 /user <شناسه> — اطلاعات کاربر\n` +
-      `➕ /create <شناسه> <روز> <حجم> [پنل] — ساخت کاربر\n` +
-      `🗑 /delete <شناسه> — حذف کاربر\n` +
-      `✅ /enable <شناسه> — فعال کردن\n` +
-      `⛔ /disable <شناسه> — غیرفعال کردن\n` +
-      `📦 /addgb <شناسه> <حجم> — افزایش حجم\n` +
-      `⏱ /renew <شناسه> <روز> [پنل] — تمدید\n` +
-      `🔗 /link <شناسه> — لینک اشتراک\n` +
-      `👥 /clients [صفحه] — لیست کاربران\n` +
-      `📊 /status [پنل] — وضعیت سرور\n` +
-      `🟢 /online — کاربران آنلاین\n` +
-      `📊 /report — گزارش روزانه\n` +
-      `📊 /versions — نسخه پنل و Xray\n` +
-      `🔄 /xray_restart [پنل] — ریستارت Xray\n` +
-      `⛳ /xray_stop [پنل] — توقف Xray\n` +
-      `🔄 /xray_version — نسخه Xray\n` +
-      `🔄 /xray_update <نسخه> — بروزرسانی Xray\n` +
-      `📡 /panel_version — نسخه پنل\n` +
-      `📡 /panel_update — بروزرسانی پنل\n\n` +
-      `🧪 /paneltest — تست اتصال به پنل و endpoint‌ها\n\n` +
-      `🖥️ مدیریت پنل:\n` +
-      `/addpanel — افزودن پنل\n` +
-      `/dellpanel <آیدی> — حذف پنل\n` +
-      `/panels — لیست پنل‌ها\n` +
-      `/backup [پنل] — دریافت بکاپ\n` +
-      `/export — خروجی کانفیگ\n\n` +
-      `🛠️ مدیریت ادمین:\n` +
-      `/makeadmin — ادمین شدن (فقط اولین بار)\n` +
-      `/adminadd <chatId> — افزودن ادمین\n` +
-      `/admindel <chatId> — حذف ادمین\n` +
-      `/admin — پنل مدیریت`;
-    await sendTelegram(chatId, msg, env);
+    const isSuper = await isSuperAdmin(env, chatId);
+
+    if (isSuper) {
+      // ───── SUPER ADMIN — full command list ─────
+      const msg =
+        `👑 دستورات سوپر ادمین:\n\n` +
+        `🔍 /search <شناسه> — جستجوی کاربر\n` +
+        `👤 /user <شناسه> — اطلاعات کاربر\n` +
+        `➕ /create <شناسه> <روز> <حجم> [پنل] — ساخت کاربر\n` +
+        `🗑 /delete <شناسه> — حذف کاربر\n` +
+        `✅ /enable <شناسه> — فعال کردن\n` +
+        `⛔ /disable <شناسه> — غیرفعال کردن\n` +
+        `📦 /addgb <شناسه> <حجم> — افزایش حجم\n` +
+        `⏱ /renew <شناسه> <روز> [پنل] — تمدید\n` +
+        `🔗 /link <شناسه> — لینک اشتراک\n` +
+        `👥 /clients [صفحه] — لیست کاربران\n\n` +
+        `📊 /status [پنل] — وضعیت سرور\n` +
+        `🟢 /online — کاربران آنلاین\n` +
+        `📊 /report — گزارش روزانه\n` +
+        `📊 /versions — نسخه پنل و Xray\n` +
+        `🔄 /xray_restart [پنل] — ریستارت Xray\n` +
+        `⛳ /xray_stop [پنل] — توقف Xray\n` +
+        `🔄 /xray_version — نسخه Xray\n` +
+        `🔄 /xray_update <نسخه> — بروزرسانی Xray\n` +
+        `📡 /panel_version — نسخه پنل\n` +
+        `📡 /panel_update — بروزرسانی پنل\n\n` +
+        `🧪 /paneltest — تست اتصال به پنل و endpoint‌ها\n\n` +
+        `🖥️ مدیریت پنل:\n` +
+        `/addpanel — افزودن پنل\n` +
+        `/dellpanel <آیدی> — حذف پنل\n` +
+        `/panels — لیست پنل‌ها\n` +
+        `/backup [پنل] — دریافت بکاپ\n` +
+        `/export — خروجی کانفیگ\n\n` +
+        `🛠️ مدیریت ادمین:\n` +
+        `/makeadmin — ادمین شدن (فقط اولین بار)\n` +
+        `/addadmin <chatId> <panelIds> [maxUsers] — افزودن ادمین پنل\n` +
+        `/removeadmin <chatId> — حذف ادمین پنل\n` +
+        `/admins — لیست ادمین‌ها\n` +
+        `/ban <chatId> [دلیل] — بن کاربر\n` +
+        `/unban <chatId> — رفع بن\n` +
+        `/suspend <chatId> <دقیقه> [دلیل] — تعلیق\n` +
+        `/unsuspend <chatId> — لغو تعلیق\n` +
+        `/bannedlist — لیست بن‌شدگان\n\n` +
+        `/admin — پنل مدیریت`;
+      await sendTelegram(chatId, msg, env);
+    } else {
+      // ───── PANEL ADMIN — limited command list ─────
+      const msg =
+        `🛠️ دستورات ادمین:\n\n` +
+        `💡 شما فقط می‌توانید کاربر بسازید، تمدید کنید، حجم اضافه کنید یا حذف کنید.\n` +
+        `💡 شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.\n\n` +
+        `➕ /create <شناسه> <روز> <حجم> [پنل] — ساخت کاربر\n` +
+        `🗑 /delete <شناسه> — حذف کاربر (فقط کاربران خودتان)\n` +
+        `📦 /addgb <شناسه> <حجم> — افزایش حجم (فقط کاربران خودتان)\n` +
+        `⏱ /renew <شناسه> <روز> [پنل] — تمدید (فقط کاربران خودتان)\n` +
+        `🔍 /search <شناسه> — جستجوی کاربر (فقط کاربران خودتان)\n` +
+        `👤 /user <شناسه> — اطلاعات کاربر (فقط کاربران خودتان)\n` +
+        `🔗 /link <شناسه> — لینک اشتراک (فقط کاربران خودتان)\n` +
+        `👥 /clients [صفحه] — لیست کاربران من\n\n` +
+        `🔄 /renew — بررسی درخواست‌های تمدید از کاربران\n\n` +
+        `/admin — پنل مدیریت`;
+      await sendTelegram(chatId, msg, env);
+    }
   } else {
     const msg =
       `📖 دستورات:\n\n` +
@@ -5891,13 +6271,20 @@ async function handleCallbackQuery(callbackQuery, env) {
       const client = await getClientByIdentifier(user.clientEmail, env, panelId || user.panelId);
       if (client && panel) {
         const subId = client.subId || client.subid || client.sub_id || "";
-        if (subId && panel.subBaseUrl) {
-          const link = buildSubLink(subId, panel);
-          const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
-          if (messageId) await deleteMessage(chatId, messageId, env);
-          await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env, [
-            [{ text: "🔙 منوی اصلی", callback_data: "user_back" }],
-          ]);
+        if (subId) {
+          try {
+            const link = await buildSubLinkAsync(subId, panel, env);
+            const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env, [
+              [{ text: "🔙 منوی اصلی", callback_data: "user_back" }],
+            ]);
+          } catch (e) {
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendTelegram(chatId, `❌ لینک اشتراک: ${shortError(e)}`, env, [
+              [{ text: "🔙 منوی اصلی", callback_data: "user_back" }],
+            ]);
+          }
         } else {
           await answerCallbackQuery(callbackQueryId, env, "لینک اشتراک موجود نیست");
         }
@@ -6079,6 +6466,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Xray restart (from alert or command) ──
     if (data.startsWith("xray_restart:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const panelId = data.split(":")[1];
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) { await answerCallbackQuery(callbackQueryId, env, "پنل یافت نشد"); return; }
@@ -6099,6 +6487,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Xray stop ──
     if (data.startsWith("xray_stop:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const panelId = data.split(":")[1];
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) { await answerCallbackQuery(callbackQueryId, env, "پنل یافت نشد"); return; }
@@ -6118,6 +6507,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Server status (from button - early handler) ──
     if (data.startsWith("server_status:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.split(":")[1];
       await handleStatus(chatId, [panelId], env);
@@ -6164,6 +6554,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_status") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleStatus(chatId, [], env);
       // Show back button after status
@@ -6214,6 +6605,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_panels") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       // Cancel any active addpanel state
       await stateDelete(env, `${STATE_ADDPANEL_PREFIX}${chatId}`);
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6224,6 +6616,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_addpanel") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       await statePut(env, `addpanel:${chatId}`, { step: "name" }, MS_PER_HOUR);
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendTelegram(chatId, "➕ افزودن پنل جدید\n\n📝 نام پنل را وارد کنید:", env, [
@@ -6235,6 +6628,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_del_confirm:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const panelId = data.slice("panel_del_confirm:".length);
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendTelegram(chatId, `⚠️ آیا مطمئنید پنل "${panelId}" حذف شود؟`, env, [
@@ -6249,6 +6643,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_del_yes:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const panelId = data.slice("panel_del_yes:".length);
       if (messageId) await deleteMessage(chatId, messageId, env);
       try {
@@ -6288,6 +6683,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_xray") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendXrayMenu(chatId, env);
       await answerCallbackQuery(callbackQueryId, env);
@@ -6296,6 +6692,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_xray_update") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       await statePut(env, `xray_update_action:${chatId}`, { step: "version" }, MS_PER_HOUR);
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendTelegram(chatId, "🔄 نسخه Xray مورد نظر را وارد کنید (مثلاً 1.8.24 یا latest):", env, [
@@ -6307,6 +6704,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("xray_version:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("xray_version:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -6353,6 +6751,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_backup") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleBackup(chatId, [], env);
       await sendTelegram(chatId, "👇", env, [
@@ -6364,6 +6763,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_export") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleExportConfig(chatId, env);
       await answerCallbackQuery(callbackQueryId, env);
@@ -6372,6 +6772,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_report") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await sendDailyReportAllPanels(env);
       await sendTelegram(chatId, "📊 گزارش روزانه ارسال شد.", env, [
@@ -6383,6 +6784,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_online") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleOnline(chatId, [], env);
       await sendTelegram(chatId, "👇", env, [
@@ -6394,6 +6796,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_versions") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleVersions(chatId, [], env);
       await sendTelegram(chatId, "👇", env, [
@@ -6406,6 +6809,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── User backups list (admin) ──
     if (data === "admin_user_backups") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       try {
         const backups = await getAllUserBackups(env);
@@ -6442,6 +6846,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── API Tokens management ──
     if (data === "admin_api_tokens") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6459,6 +6864,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_api_tokens:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_api_tokens:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -6537,6 +6943,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Outbounds ──
     if (data === "admin_outbounds") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6554,6 +6961,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_outbounds:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_outbounds:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -6583,6 +6991,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Outbound traffic ──
     if (data === "admin_outbound_traffic") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6613,6 +7022,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Reset inbound traffic ──
     if (data === "admin_reset_inbound_traffic") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6674,6 +7084,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Settings ──
     if (data === "admin_settings") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6691,6 +7102,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_settings:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_settings:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -6746,6 +7158,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Error logs ──
     if (data === "admin_error_logs") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       try {
         const errors = await getErrorLogs(env, 20);
@@ -6771,6 +7184,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_clear_errors") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await clearErrorLogs(env);
       await sendTelegram(chatId, "✅ خطاها پاک شدند.", env, [[{text:"🔙",callback_data:"admin_back"}]]);
@@ -6781,6 +7195,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Ban/Suspend menu (super admin) ──
     if (data === "admin_ban_menu") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6842,6 +7257,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Manage admins (super admin) ──
     if (data === "admin_manage_admins") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6894,6 +7310,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("admin_remove:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6910,6 +7327,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("admin_remove_yes:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6933,6 +7351,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data === "admin_panel_restart") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -6949,6 +7368,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_restart:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_restart:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -6977,6 +7397,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Server logs ──
     if (data === "admin_logs") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panels = await getPanels(env);
       const buttons = [];
@@ -6991,6 +7412,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_logs:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_logs:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -7032,6 +7454,7 @@ async function handleCallbackQuery(callbackQuery, env) {
     // ── Manage inbounds ──
     if (data === "admin_inbounds") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await answerCallbackQuery(callbackQueryId, env, "فقط سوپر ادمین"); return; }
       if (messageId) await deleteMessage(chatId, messageId, env);
@@ -7048,6 +7471,7 @@ async function handleCallbackQuery(callbackQuery, env) {
 
     if (data.startsWith("panel_inbounds:")) {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       const panelId = data.slice("panel_inbounds:".length);
       const panel = await resolvePanelAsync(env, panelId);
@@ -7304,6 +7728,10 @@ async function handleCallbackQuery(callbackQuery, env) {
         return;
       }
 
+      // Access control: panel admins can only act on users THEY created.
+      // Super admins can act on any user.
+      if (!(await adminCanAccessClientCallback(chatId, client, callbackQueryId, env))) return;
+
       // Delete the message that contained the button (except for delete_confirm which shows confirmation)
       if (messageId && action !== "delete_confirm") await deleteMessage(chatId, messageId, env);
 
@@ -7322,6 +7750,8 @@ async function handleCallbackQuery(callbackQuery, env) {
       if (panel) {
         const client = await getClientByIdentifier(identifierPart, env, panelIdPart);
         if (client) {
+          // Access control: panel admins can only act on users THEY created.
+          if (!(await adminCanAccessClientCallback(chatId, client, callbackQueryId, env))) return;
           await handleAdminAction(chatId, action, panel, client, env, callbackQueryId);
           return;
         }
@@ -7381,12 +7811,19 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
           await answerCallbackQuery(callbackQueryId, env, "لینک اشتراک موجود نیست");
           return;
         }
-        const link = buildSubLink(subId, panel);
-        const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
-        await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env, [
-          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
-        ]);
-        await answerCallbackQuery(callbackQueryId, env, "لینک اشتراک");
+        try {
+          const link = await buildSubLinkAsync(subId, panel, env);
+          const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
+          await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env, [
+            [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+          ]);
+          await answerCallbackQuery(callbackQueryId, env, "لینک اشتراک");
+        } catch (e) {
+          await sendTelegram(chatId, `❌ خطا در ساخت لینک اشتراک: ${shortError(e)}`, env, [
+            [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+          ]);
+          await answerCallbackQuery(callbackQueryId, env, "خطا");
+        }
         break;
       }
 
