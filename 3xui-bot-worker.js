@@ -887,6 +887,7 @@ async function handleScheduled(event, env, ctx) {
   }
   if (cron === "*/10 * * * *" || !cron) {
     ctx.waitUntil(checkResourceAlertsAllPanels(env));
+    ctx.waitUntil(checkClientAlertsAllPanels(env));
   }
   if (cron === "0 9 * * *" || !cron) {
     ctx.waitUntil(sendDailyReportAllPanels(env));
@@ -1413,6 +1414,9 @@ async function deleteUser(env, chatId) {
     `suspend_reason:${chatId}`,
     `addadmin_action:${chatId}`,
     `node_add_action:${chatId}`,
+    `cf_add_action:${chatId}`,
+    `stars_add_action:${chatId}`,
+    `ssh_action:${chatId}`,
   ];
   for (const key of stateKeys) {
     try { await stateDelete(env, key); } catch {}
@@ -1621,6 +1625,14 @@ function buildPanelObject(item, index, env) {
     cpuRamAlertThreshold: firstPositiveNumber(item.cpuRamAlertThreshold, item.CPU_RAM_ALERT_THRESHOLD),
     authType: item.authType || "bearer",
     authHeader: item.authHeader || "",
+    sshBridgeUrl: item.sshBridgeUrl || "",
+    sshBridgeToken: item.sshBridgeToken || "",
+    sshHost: item.sshHost || "",
+    sshPort: item.sshPort || 22,
+    sshUsername: item.sshUsername || "root",
+    sshPassword: item.sshPassword || "",
+    sshPrivateKey: item.sshPrivateKey || "",
+    sshPassphrase: item.sshPassphrase || "",
     botToken: item.botToken || "",
     apiDebug: item.apiDebug ?? item.API_DEBUG ?? env?.API_DEBUG ?? "",
   };
@@ -1663,6 +1675,14 @@ async function getPanels(env) {
       cpuRamAlertThreshold: firstPositiveNumber(env.CPU_RAM_ALERT_THRESHOLD),
       authType: env.API_AUTH_TYPE || "bearer",
       authHeader: env.API_AUTH_HEADER || "",
+      sshBridgeUrl: env.SSH_BRIDGE_URL || "",
+      sshBridgeToken: env.SSH_BRIDGE_TOKEN || "",
+      sshHost: env.SSH_HOST || "",
+      sshPort: Number(env.SSH_PORT) || 22,
+      sshUsername: env.SSH_USERNAME || "root",
+      sshPassword: env.SSH_PASSWORD || "",
+      sshPrivateKey: env.SSH_PRIVATE_KEY || "",
+      sshPassphrase: env.SSH_PASSPHRASE || "",
       botToken: env.BOT_TOKEN || env.TELEGRAM_BOT_TOKEN || "",
       apiDebug: env.API_DEBUG || "",
     };
@@ -1874,10 +1894,44 @@ async function rejectIfNotSuper(chatId, callbackQueryId, env) {
 async function rejectCommandIfNotSuper(chatId, env) {
   const isSuper = await isSuperAdmin(env, chatId);
   if (!isSuper) {
-    await sendTelegram(chatId, "⛔ این دستور فقط برای سوپر ادمین قابل دسترسی است.", env);
+    await sendTelegram(chatId, "⛔ این دستور فقط برای سوپر ادمین قابل دسترسی است.", env,
+      [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]
+    );
     return true;
   }
   return false;
+}
+
+/**
+ * Smart back button — returns the appropriate "back" callback_data based on
+ * the user's role and context:
+ * - Super admin with CF token → "admin_back" (which goes to choice menu)
+ * - Super admin without CF token → "admin_back" (goes to admin menu)
+ * - Panel admin → "admin_back" (goes to limited admin menu)
+ * - Regular user → "user_back"
+ *
+ * Usage:
+ *   const back = await smartBackButton(chatId, env);
+ *   await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: back }]]);
+ */
+async function smartBackButton(chatId, env) {
+  const admin = await isAdminAsync(chatId, env);
+  if (admin) return "admin_back";
+  return "user_back";
+}
+
+/**
+ * Send a Telegram message WITH a back button. Drops in for the common pattern
+ * of `await sendTelegram(chatId, msg, env);` — adds a smart back button so
+ * the user is never stranded on a text-only message.
+ *
+ * Usage:
+ *   await sendTelegramWithBack(chatId, msg, env);
+ *   await sendTelegramWithBack(chatId, msg, env, "cf_back");  // override back target
+ */
+async function sendTelegramWithBack(chatId, text, env, backOverride = null) {
+  const back = backOverride || await smartBackButton(chatId, env);
+  await sendTelegram(chatId, text, env, [[{ text: "🔙 منوی اصلی", callback_data: back }]]);
 }
 
 async function getAdminPanelIds(env, chatId) {
@@ -1888,12 +1942,6 @@ async function getAdminPanelIds(env, chatId) {
 }
 
 async function getAdminCreatedCount(env, chatId) {
-  // Count panel clients with comment "TG:<chatId>" — this is the actual
-  // source of truth for "users this admin created". The old implementation
-  // counted KV user records, but createClient() doesn't create KV records
-  // (only registerUser() does, which is for self-registration). So the old
-  // count was always 0 for admin-created users, making the maxUsers limit
-  // ineffective.
   try {
     const panels = await getPanels(env);
     const myMarker = `TG:${String(chatId)}`;
@@ -1913,9 +1961,42 @@ async function getAdminCreatedCount(env, chatId) {
   }
 }
 
-async function addPanelAdmin(env, chatId, panelIds, maxUsers) {
+/**
+ * Get total traffic used by all clients an admin created (in GB).
+ * Used for maxTrafficGB limit enforcement.
+ */
+async function getAdminCreatedTrafficGB(env, chatId) {
+  try {
+    const panels = await getPanels(env);
+    const myMarker = `TG:${String(chatId)}`;
+    let totalBytes = 0;
+    for (const panel of panels) {
+      try {
+        const clients = await listAllClients(panel);
+        for (const c of clients) {
+          const comment = String(c?.comment || "").trim();
+          if (comment === myMarker || comment.startsWith(myMarker + " ")) {
+            const t = getClientTraffic(c);
+            totalBytes += t.up + t.down;
+          }
+        }
+      } catch { /* ignore panel errors */ }
+    }
+    return totalBytes / BYTES_PER_GB;
+  } catch {
+    return 0;
+  }
+}
+
+async function addPanelAdmin(env, chatId, panelIds, maxUsers, maxTrafficGB) {
   const id = String(chatId);
-  await kvPut(env, `${KV_ADMIN_ROLE_PREFIX}${id}`, { role: "admin", panelIds: panelIds||[], maxUsers: maxUsers||0, createdAt: Date.now() });
+  await kvPut(env, `${KV_ADMIN_ROLE_PREFIX}${id}`, {
+    role: "admin",
+    panelIds: panelIds||[],
+    maxUsers: maxUsers||0,
+    maxTrafficGB: maxTrafficGB||0,  // 0 = unlimited
+    createdAt: Date.now()
+  });
   await addAdminId(env, id);
 }
 
@@ -1936,7 +2017,16 @@ async function getAllAdminsWithRoles(env) {
   for (const id of ids) {
     const role = await getAdminRole(env, id);
     const cnt = await getAdminCreatedCount(env, id);
-    result.push({ chatId: id, role: role?.role||"super", panelIds: role?.panelIds||[], maxUsers: role?.maxUsers||0, createdCount: cnt });
+    const trafficGB = await getAdminCreatedTrafficGB(env, id);
+    result.push({
+      chatId: id,
+      role: role?.role||"super",
+      panelIds: role?.panelIds||[],
+      maxUsers: role?.maxUsers||0,
+      maxTrafficGB: role?.maxTrafficGB||0,
+      createdCount: cnt,
+      usedTrafficGB: trafficGB,
+    });
   }
   return result;
 }
@@ -3565,7 +3655,11 @@ function formatClient(client, panel) {
   lines.push(`⬆️ آپلود: ${formatGB(traffic.up)}`);
   lines.push(`⬇️ دانلود: ${formatGB(traffic.down)}`);
   lines.push(`💾 باقی مانده: ${totalBytes > 0 ? formatGB(remainingBytes) : "نامحدود"}`);
-  if (totalBytes > 0) lines.push(`📈 درصد مصرف: ${formatPercent(usedBytes, totalBytes)}`);
+  if (totalBytes > 0) {
+    const usagePct = (usedBytes / totalBytes) * 100;
+    lines.push(`📈 درصد مصرف: ${formatPercent(usedBytes, totalBytes)}`);
+    lines.push(progressBar(usagePct));
+  }
 
   lines.push(``, `📅 تاریخ انقضا: ${expiry > 0 ? formatDate(expiry) : "نامحدود"}`);
   lines.push(`⏳ باقیمانده زمان: ${expiry > 0 ? formatRemainingTime(expiry) : "نامحدود"}`);
@@ -3627,25 +3721,31 @@ async function buildAdminClientButtons(chatId, client, panel, env) {
   return buttons;
 }
 
-function buildUserViewButtons(email, panelId, env) {
+async function buildUserViewButtons(chatId, email, panelId, env) {
   const supportUser = getSupportUsername(env);
+  const lang = await getUserLang(env, chatId).catch(() => "fa");
+  const L = (k) => t(lang, k);
   /** @type {any[][]} */
   const buttons = [
     [
-      { text: "🔄 بروزرسانی", callback_data: `refresh:${panelId}` },
-      { text: "🔗 لینک اشتراک", callback_data: `user_sublink:${panelId}` },
+      { text: L("refresh"), callback_data: `refresh:${panelId}` },
+      { text: L("sub_link"), callback_data: `user_sublink:${panelId}` },
     ],
     [
-      { text: "📅 درخواست تمدید", callback_data: `user_renew:${panelId}` },
-      { text: "📦 درخواست حجم", callback_data: `user_addgb:${panelId}` },
+      { text: L("renew"), callback_data: `user_renew:${panelId}` },
+      { text: "📦 +GB", callback_data: `user_addgb:${panelId}` },
     ],
     [
-      { text: "📋 اطلاعات پشتیبان", callback_data: "user_backup_info" },
-      { text: "❓ راهنما", callback_data: "user_help" },
+      { text: L("buy_subscription"), callback_data: "user_stars" },
+      { text: L("help"), callback_data: "user_help" },
+    ],
+    [
+      { text: L("language"), callback_data: "user_lang" },
+      { text: L("github"), url: "https://github.com/Raya-coder/3x-ui-bot" },
     ],
   ];
   if (supportUser) {
-    buttons.push([{ text: "🎧 پشتیبانی", url: `https://t.me/${supportUser}` }]);
+    buttons.push([{ text: L("support"), url: `https://t.me/${supportUser}` }]);
   }
   return buttons;
 }
@@ -3653,7 +3753,7 @@ function buildUserViewButtons(email, panelId, env) {
 async function sendUserMenu(chatId, env) {
   const user = await getUser(env, chatId);
   if (!user) {
-    await sendTelegram(chatId, "❌ شما ثبت‌نام نکرده‌اید. /start را بزنید.", env);
+    await sendTelegramWithBack(chatId, "❌ شما ثبت‌نام نکرده‌اید. /start را بزنید.", env);
     return;
   }
   const client = await getClientByIdentifier(user.clientEmail, env, user.panelId);
@@ -3663,9 +3763,9 @@ async function sendUserMenu(chatId, env) {
     const backup = await getUserBackup(env, chatId);
     if (backup) {
       const msg = `⚠️ سرور در دسترس نیست.\n\n${formatUserBackup(backup)}\n\n💡 این اطلاعات از بکاپ داخلی ربات است.`;
-      await sendTelegram(chatId, msg, env, buildUserViewButtons(user.clientEmail, user.panelId, env));
+      await sendTelegram(chatId, msg, env, await buildUserViewButtons(chatId, user.clientEmail, user.panelId, env));
     } else {
-      await sendTelegram(chatId, "❌ کاربر یافت نشد و بکاپی موجود نیست. لطفاً مجدداً ثبت‌نام کنید.", env);
+      await sendTelegramWithBack(chatId, "❌ کاربر یافت نشد و بکاپی موجود نیست. لطفاً مجدداً ثبت‌نام کنید.", env);
     }
     return;
   }
@@ -3690,7 +3790,7 @@ async function sendUserMenu(chatId, env) {
   } catch { /* ignore backup errors */ }
 
   const msg = formatClient(client, panel);
-  const buttons = buildUserViewButtons(user.clientEmail, user.panelId, env);
+  const buttons = await buildUserViewButtons(chatId, user.clientEmail, user.panelId, env);
   await sendTelegram(chatId, msg, env, buttons);
 }
 
@@ -3932,6 +4032,711 @@ async function processPendingRenewals(env) {
   }
 }
 
+// ─── Traffic Charts (QuickChart API) ──────────────────────────
+// Uses https://quickchart.io to generate chart images from URL parameters.
+// No external dependencies — just build a URL and send as photo.
+
+const QUICKCHART_BASE = "https://quickchart.io/chart";
+
+function buildChartUrl(config) {
+  return `${QUICKCHART_BASE}?c=${encodeURIComponent(JSON.stringify(config))}&backgroundColor=white`;
+}
+
+/**
+ * Generate a bar chart comparing traffic across panels.
+ * Returns a QuickChart URL that can be sent via sendPhoto.
+ */
+function buildPanelComparisonChart(panelsData) {
+  // panelsData: [{ name, upGB, downGB, totalGB }]
+  const labels = panelsData.map(p => p.name.slice(0, 15));
+  const upData = panelsData.map(p => Number(p.upGB || 0).toFixed(2));
+  const downData = panelsData.map(p => Number(p.downGB || 0).toFixed(2));
+
+  return buildChartUrl({
+    type: "bar",
+    data: {
+      labels,
+      datasets: [
+        { label: "Upload (GB)", data: upData, backgroundColor: "#4CAF50" },
+        { label: "Download (GB)", data: downData, backgroundColor: "#2196F3" },
+      ],
+    },
+    options: {
+      title: { display: true, text: "Traffic Comparison by Panel", fontSize: 16 },
+      scales: { yAxes: [{ ticks: { beginAtZero: true } }] },
+    },
+  });
+}
+
+/**
+ * Generate a pie chart showing used vs remaining for a single client.
+ */
+function buildUsagePieChart(usedGB, totalGB) {
+  const remaining = Math.max(0, totalGB - usedGB);
+  return buildChartUrl({
+    type: "doughnut",
+    data: {
+      labels: ["Used", "Remaining"],
+      datasets: [{
+        data: [Number(usedGB.toFixed(2)), Number(remaining.toFixed(2))],
+        backgroundColor: ["#f44336", "#4CAF50"],
+      }],
+    },
+    options: {
+      title: { display: true, text: "Traffic Usage", fontSize: 16 },
+      plugins: {
+        datalabels: {
+          display: true,
+          formatter: (val) => val.toFixed(1) + " GB",
+        },
+      },
+    },
+  });
+}
+
+/**
+ * Handle /chart command — show traffic comparison chart across panels.
+ */
+async function handleChart(chatId, args, env) {
+  const panels = await getPanels(env);
+  const panelsData = [];
+
+  for (const panel of panels) {
+    try {
+      const clients = await listAllClients(panel);
+      let upGB = 0, downGB = 0;
+      for (const c of clients) {
+        const t = getClientTraffic(c);
+        upGB += t.up / BYTES_PER_GB;
+        downGB += t.down / BYTES_PER_GB;
+      }
+      panelsData.push({ name: panel.name, upGB, downGB });
+    } catch { /* skip panel */ }
+  }
+
+  if (!panelsData.length) {
+    await sendTelegramWithBack(chatId, "❌ هیچ داده‌ای برای نمایش نمودار در دسترس نیست.", env);
+    return;
+  }
+
+  const chartUrl = buildPanelComparisonChart(panelsData);
+  let caption = "📊 مقایسه ترافیک پنل‌ها\n\n";
+  for (const p of panelsData) {
+    caption += `🖥 ${p.name}: ⬆️ ${p.upGB.toFixed(2)} GB | ⬇️ ${p.downGB.toFixed(2)} GB\n`;
+  }
+
+  try {
+    await sendPhoto(chatId, chartUrl, caption, env, [
+      [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+    ]);
+  } catch (e) {
+    // Fallback: send text only
+    await sendTelegramWithBack(chatId, `📊 نمودار در دسترس نیست.\n\n${caption}`, env);
+  }
+}
+
+// ─── Volume Warning (90%) + Expiry Reminder (3 days) ──────────
+// Runs as part of the cron job. Checks all clients across all panels
+// and sends alerts when:
+// - Traffic usage >= 90% of total
+// - Expiry is within 3 days
+
+const KV_VOLUME_WARN_PREFIX = "volwarn:";
+const KV_EXPIRY_WARN_PREFIX = "expwarn:";
+
+async function checkClientAlertsAllPanels(env) {
+  const panels = await getPanels(env);
+  const adminIds = await getSuperAdminIds(env);
+  const now = Date.now();
+  const THREE_DAYS_MS = 3 * MS_PER_DAY;
+
+  for (const panel of panels) {
+    try {
+      const clients = await listAllClients(panel);
+      for (const client of clients) {
+        const identifier = getIdentifierFromClient(client);
+        if (!identifier || identifier === "نامشخص") continue;
+
+        // === Check 90% volume usage ===
+        const totalBytes = getClientTotalBytes(client);
+        if (totalBytes > 0) {
+          const traffic = getClientTraffic(client);
+          const usedBytes = traffic.up + traffic.down;
+          const usagePercent = (usedBytes / totalBytes) * 100;
+
+          if (usagePercent >= 90) {
+            const warnKey = `${KV_VOLUME_WARN_PREFIX}${panel.id}:${identifier}`;
+            const alreadyWarned = await kvGet(env, warnKey);
+            if (!alreadyWarned) {
+              const msg =
+                `⚠️ هشدار حجم!\n\n` +
+                `👤 کاربر: ${identifier}\n` +
+                `🖥 سرور: ${panel.name}\n` +
+                `📊 مصرف: ${usagePercent.toFixed(1)}%\n` +
+                `📦 حجم کل: ${formatGB(totalBytes)}\n` +
+                `📊 مصرف شده: ${formatGB(usedBytes)}\n` +
+                `💾 باقی‌مانده: ${formatGB(Math.max(0, totalBytes - usedBytes))}`;
+
+              for (const chatId of adminIds) {
+                try { await sendTelegram(chatId, msg, env); } catch { /* ignore */ }
+              }
+              // Mark as warned (don't warn again until volume resets)
+              await kvPut(env, warnKey, { timestamp: now, percent: usagePercent });
+            }
+          } else if (usagePercent < 50) {
+            // Reset warning state if usage drops below 50% (e.g., after traffic reset)
+            const warnKey = `${KV_VOLUME_WARN_PREFIX}${panel.id}:${identifier}`;
+            const alreadyWarned = await kvGet(env, warnKey);
+            if (alreadyWarned) {
+              await kvDelete(env, warnKey);
+            }
+          }
+        }
+
+        // === Check 3-day expiry ===
+        const expiry = Number(client.expiryTime ?? 0);
+        if (expiry > 0) {
+          const timeLeft = expiry - now;
+          if (timeLeft > 0 && timeLeft <= THREE_DAYS_MS) {
+            const expKey = `${KV_EXPIRY_WARN_PREFIX}${panel.id}:${identifier}`;
+            const alreadyWarned = await kvGet(env, expKey);
+            if (!alreadyWarned) {
+              const daysLeft = Math.ceil(timeLeft / MS_PER_DAY);
+              const msg =
+                `⏰ یادآوری انقضا!\n\n` +
+                `👤 کاربر: ${identifier}\n` +
+                `🖥 سرور: ${panel.name}\n` +
+                `📅 انقضا: ${formatDate(expiry)}\n` +
+                `⏳ باقی‌مانده: ${daysLeft} روز\n\n` +
+                `💡 لطفاً اشتراک خود را تمدید کنید.`;
+
+              // Notify ONLY the user (not admins/super admins)
+              const user = await findUserByEmail(env, identifier, panel.id);
+              if (user) {
+                try { await sendTelegram(user.chatId, msg, env); } catch { /* ignore */ }
+              }
+              await kvPut(env, expKey, { timestamp: now, expiry });
+            }
+          } else if (timeLeft <= 0) {
+            // Expired — clear the warning state so next subscription gets warned again
+            const expKey = `${KV_EXPIRY_WARN_PREFIX}${panel.id}:${identifier}`;
+            const alreadyWarned = await kvGet(env, expKey);
+            if (alreadyWarned) {
+              await kvDelete(env, expKey);
+            }
+          }
+        }
+      }
+    } catch (error) {
+      console.error(`Client alerts check error for ${panel.name}:`, shortError(error));
+    }
+  }
+}
+
+// ─── New User Registration Notification ───────────────────────
+
+async function notifyAdminsNewUser(env, chatId, email, panelName) {
+  const adminIds = await getSuperAdminIds(env);
+  const msg =
+    `👋 کاربر جدید ثبت‌نام کرد!\n\n` +
+    `👤 شناسه: ${email}\n` +
+    `🆔 Chat ID: ${chatId}\n` +
+    `🖥 سرور: ${panelName}\n` +
+    `🕐 زمان: ${new Date().toLocaleString("fa-IR")}`;
+
+  for (const adminId of adminIds) {
+    try { await sendTelegram(adminId, msg, env); } catch { /* ignore */ }
+  }
+}
+
+// ─── Visual Progress Bar ──────────────────────────────────────
+
+function progressBar(percent, width = 15) {
+  if (percent < 0) percent = 0;
+  if (percent > 100) percent = 100;
+  const filled = Math.round((percent / 100) * width);
+  const empty = width - filled;
+  const bar = "█".repeat(filled) + "░".repeat(empty);
+  return `[${bar}] ${percent.toFixed(1)}%`;
+}
+
+// ─── Multi-Language Support ───────────────────────────────────
+// Supported: fa (Persian/default), en (English), zh (Chinese), ru (Russian)
+
+const I18N = {
+  fa: {
+    // Menu titles
+    super_admin_menu: "👑 پنل مدیریت سوپر ادمین",
+    admin_menu: "🛠️ پنل مدیریت ادمین",
+    user_menu: "👤 حساب کاربری",
+    cf_menu: "☁️ مدیریت Cloudflare",
+    select_option: "👇 انتخاب کنید:",
+    // Admin buttons
+    server_status: "📊 وضعیت سرورها", search_user: "🔍 جستجوی کاربر",
+    user_list: "👥 لیست کاربران", create_user: "➕ ساخت کاربر جدید",
+    panel_manage: "🖥️ مدیریت پنل‌ها", inbound_manage: "📦 مدیریت Inbound",
+    node_manage: "🌐 مدیریت Nodes", renewals: "🔄 درخواست‌های تمدید",
+    xray_manage: "⚡ مدیریت Xray", panel_restart: "🔄 ریستارت پنل",
+    backup: "📦 بکاپ", export_config: "📤 خروجی کانفیگ",
+    daily_report: "📊 گزارش روزانه", server_logs: "📋 لاگ سرور",
+    online_users: "🟢 کاربران آنلاین", versions: "📋 نسخه‌ها",
+    user_backups: "💾 بکاپ کاربران", api_tokens: "🔑 توکن‌های API",
+    outbounds: "📡 Outbounds", settings: "⚙️ تنظیمات پنل",
+    outbound_traffic: "📤 ترافیک Outbound", reset_inbound_traffic: "📥 ریست ترافیک Inbound",
+    ban_menu: "🚫 بن/تعلیق", manage_admins: "👥 ادمین‌ها",
+    error_logs: "📋 لاگ خطاها", chart_traffic: "📊 نمودار ترافیک",
+    stars_payment: "⭐ پرداخت Stars",
+    // User buttons
+    buy_subscription: "⭐ خرید اشتراک",
+    // Common
+    main_menu: "🔙 منوی اصلی", back: "🔙", cancel: "❌ انصراف",
+    confirm: "✅ تأیید", yes: "✅ بله", no: "❌ خیر",
+    delete: "🗑 حذف", refresh: "🔄 بروزرسانی",
+    language: "🌐 زبان", github: "🐙 GitHub",
+    // Messages
+    no_access: "⛔ دسترسی ندارید", super_only: "⛔ فقط سوپر ادمین",
+    not_found: "❌ یافت نشد", error: "❌ خطا", success: "✅ موفق",
+    select_server: "🖥️ سرور خود را انتخاب کنید:",
+    enter_email: "📧 ایمیل/شناسه کاربری خود را وارد کنید:",
+    enter_days: "📅 تعداد روز اعتبار را وارد کنید (مثلاً 30):",
+    enter_gb: "📦 حجم به گیگابایت را وارد کنید (مثلاً 50 یا 0 برای نامحدود):",
+    welcome: "👋 به ربات مدیریت VPN خوش آمدید!",
+    reg_success: "✅ ثبت‌نام موفق!",
+    reg_cancel: "🔙 شروع مجدد",
+    user_created_count: "📊 کاربران ساخته‌شده",
+    admin_limit: "💡 شما فقط می‌توانید کاربر بسازید، تمدید کنید یا حذف کنید.",
+    admin_own_users: "💡 شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.",
+    // Client info
+    server: "🖥 سرور", identifier: "🔹 شناسه", total: "📦 حجم کل",
+    used: "📊 مصرف شده", upload: "⬆️ آپلود", download: "⬇️ دانلود",
+    remaining: "💾 باقی مانده", percent: "📈 درصد مصرف",
+    expiry: "📅 تاریخ انقضا", remaining_time: "⏳ باقیمانده زمان",
+    status: "وضعیت", active: "🟢 فعال", expired: "⏰ منقضی",
+    disabled: "⛔ غیرفعال", depleted: "📦 اتمام حجم",
+    last_activity: "🟢 آخرین فعالیت",
+    usage: "📊 مصرف شما", renew: "🔄 درخواست تمدید",
+    support: "🎧 پشتیبانی", sub_link: "🔗 لینک اشتراک",
+    backup_info: "📋 اطلاعات پشتیبان", help: "❓ راهنما",
+    unlimited: "نامحدود",
+    // SSH
+    ssh_terminal: "🖥️ ترمینال SSH", ssh_select_server: "🖥️ سرور را انتخاب کنید:",
+    ssh_enter_command: "💻 دستور را وارد کنید (مثلاً: ls -la):",
+    ssh_output: "📤 خروجی:", ssh_connected: "✅ متصل شد",
+    ssh_not_configured: "❌ SSH bridge برای این سرور تنظیم نشده است.",
+    ssh_running: "⏳ در حال اجرا...",
+  },
+  en: {
+    super_admin_menu: "👑 Super Admin Panel",
+    admin_menu: "🛠️ Admin Panel",
+    user_menu: "👤 My Account",
+    cf_menu: "☁️ Cloudflare Management",
+    select_option: "👇 Select:",
+    server_status: "📊 Server Status", search_user: "🔍 Search User",
+    user_list: "👥 User List", create_user: "➕ Create User",
+    panel_manage: "🖥️ Panel Management", inbound_manage: "📦 Inbound Management",
+    node_manage: "🌐 Node Management", renewals: "🔄 Renewal Requests",
+    xray_manage: "⚡ Xray Management", panel_restart: "🔄 Restart Panel",
+    backup: "📦 Backup", export_config: "📤 Export Config",
+    daily_report: "📊 Daily Report", server_logs: "📋 Server Logs",
+    online_users: "🟢 Online Users", versions: "📋 Versions",
+    user_backups: "💾 User Backups", api_tokens: "🔑 API Tokens",
+    outbounds: "📡 Outbounds", settings: "⚙️ Panel Settings",
+    outbound_traffic: "📤 Outbound Traffic", reset_inbound_traffic: "📥 Reset Inbound Traffic",
+    ban_menu: "🚫 Ban/Suspend", manage_admins: "👥 Admins",
+    error_logs: "📋 Error Logs", chart_traffic: "📊 Traffic Chart",
+    stars_payment: "⭐ Stars Payment",
+    buy_subscription: "⭐ Buy Subscription",
+    main_menu: "🔙 Main Menu", back: "🔙", cancel: "❌ Cancel",
+    confirm: "✅ Confirm", yes: "✅ Yes", no: "❌ No",
+    delete: "🗑 Delete", refresh: "🔄 Refresh",
+    language: "🌐 Language", github: "🐙 GitHub",
+    no_access: "⛔ Access denied", super_only: "⛔ Super admin only",
+    not_found: "❌ Not found", error: "❌ Error", success: "✅ Success",
+    select_server: "🖥️ Select your server:",
+    enter_email: "📧 Enter your email/ID:",
+    enter_days: "📅 Enter number of days (e.g. 30):",
+    enter_gb: "📦 Enter volume in GB (e.g. 50, or 0 for unlimited):",
+    welcome: "👋 Welcome to VPN Management Bot!",
+    reg_success: "✅ Registration successful!",
+    reg_cancel: "🔙 Restart",
+    user_created_count: "📊 Users created",
+    admin_limit: "💡 You can only create, renew, or delete users.",
+    admin_own_users: "💡 You only have access to users you created.",
+    server: "🖥 Server", identifier: "🔹 ID", total: "📦 Total",
+    used: "📊 Used", upload: "⬆️ Upload", download: "⬇️ Download",
+    remaining: "💾 Remaining", percent: "📈 Usage",
+    expiry: "📅 Expiry", remaining_time: "⏳ Time left",
+    status: "Status", active: "🟢 Active", expired: "⏰ Expired",
+    disabled: "⛔ Disabled", depleted: "📦 Depleted",
+    last_activity: "🟢 Last activity",
+    usage: "📊 Your Usage", renew: "🔄 Request Renewal",
+    support: "🎧 Support", sub_link: "🔗 Subscription Link",
+    backup_info: "📋 Backup Info", help: "❓ Help",
+    unlimited: "Unlimited",
+    ssh_terminal: "🖥️ SSH Terminal", ssh_select_server: "🖥️ Select server:",
+    ssh_enter_command: "💻 Enter command (e.g. ls -la):",
+    ssh_output: "📤 Output:", ssh_connected: "✅ Connected",
+    ssh_not_configured: "❌ SSH bridge not configured for this server.",
+    ssh_running: "⏳ Running...",
+  },
+  zh: {
+    super_admin_menu: "👑 超级管理员面板",
+    admin_menu: "🛠️ 管理员面板",
+    user_menu: "👤 我的账户",
+    cf_menu: "☁️ Cloudflare 管理",
+    select_option: "👇 请选择:",
+    server_status: "📊 服务器状态", search_user: "🔍 搜索用户",
+    user_list: "👥 用户列表", create_user: "➕ 创建用户",
+    panel_manage: "🖥️ 面板管理", inbound_manage: "📦 Inbound 管理",
+    node_manage: "🌐 节点管理", renewals: "🔄 续费请求",
+    xray_manage: "⚡ Xray 管理", panel_restart: "🔄 重启面板",
+    backup: "📦 备份", export_config: "📤 导出配置",
+    daily_report: "📊 日报", server_logs: "📋 服务器日志",
+    online_users: "🟢 在线用户", versions: "📋 版本",
+    user_backups: "💾 用户备份", api_tokens: "🔑 API 令牌",
+    outbounds: "📡 出站", settings: "⚙️ 面板设置",
+    outbound_traffic: "📤 出站流量", reset_inbound_traffic: "📥 重置入站流量",
+    ban_menu: "🚫 封禁/暂停", manage_admins: "👥 管理员",
+    error_logs: "📋 错误日志", chart_traffic: "📊 流量图表",
+    stars_payment: "⭐ Stars 支付",
+    buy_subscription: "⭐ 购买订阅",
+    main_menu: "🔙 主菜单", back: "🔙", cancel: "❌ 取消",
+    confirm: "✅ 确认", yes: "✅ 是", no: "❌ 否",
+    delete: "🗑 删除", refresh: "🔄 刷新",
+    language: "🌐 语言", github: "🐙 GitHub",
+    no_access: "⛔ 无权限", super_only: "⛔ 仅超级管理员",
+    not_found: "❌ 未找到", error: "❌ 错误", success: "✅ 成功",
+    select_server: "🖥️ 请选择您的服务器:",
+    enter_email: "📧 请输入您的邮箱/标识:",
+    enter_days: "📅 请输入天数 (例如 30):",
+    enter_gb: "📦 请输入流量 GB (例如 50, 0 为无限):",
+    welcome: "👋 欢迎使用 VPN 管理机器人!",
+    reg_success: "✅ 注册成功!",
+    reg_cancel: "🔙 重新开始",
+    user_created_count: "📊 已创建用户",
+    admin_limit: "💡 您只能创建、续费或删除用户。",
+    admin_own_users: "💡 您只能访问您创建的用户。",
+    server: "🖥 服务器", identifier: "🔹 标识", total: "📦 总量",
+    used: "📊 已用", upload: "⬆️ 上传", download: "⬇️ 下载",
+    remaining: "💾 剩余", percent: "📈 使用率",
+    expiry: "📅 到期", remaining_time: "⏳ 剩余时间",
+    status: "状态", active: "🟢 活跃", expired: "⏰ 已过期",
+    disabled: "⛔ 已禁用", depleted: "📦 已耗尽",
+    last_activity: "🟢 最后活动",
+    usage: "📊 您的用量", renew: "🔄 请求续费",
+    support: "🎧 支持", sub_link: "🔗 订阅链接",
+    backup_info: "📋 备份信息", help: "❓ 帮助",
+    unlimited: "无限",
+    ssh_terminal: "🖥️ SSH 终端", ssh_select_server: "🖥️ 选择服务器:",
+    ssh_enter_command: "💻 输入命令 (例如 ls -la):",
+    ssh_output: "📤 输出:", ssh_connected: "✅ 已连接",
+    ssh_not_configured: "❌ 此服务器未配置 SSH 桥接。",
+    ssh_running: "⏳ 运行中...",
+  },
+  ru: {
+    super_admin_menu: "👑 Панель супер-админа",
+    admin_menu: "🛠️ Панель админа",
+    user_menu: "👤 Мой аккаунт",
+    cf_menu: "☁️ Управление Cloudflare",
+    select_option: "👇 Выберите:",
+    server_status: "📊 Статус серверов", search_user: "🔍 Поиск пользователя",
+    user_list: "👥 Список пользователей", create_user: "➕ Создать пользователя",
+    panel_manage: "🖥️ Управление панелями", inbound_manage: "📦 Управление Inbound",
+    node_manage: "🌐 Управление узлами", renewals: "🔄 Запросы продления",
+    xray_manage: "⚡ Управление Xray", panel_restart: "🔄 Перезапуск панели",
+    backup: "📦 Резервная копия", export_config: "📤 Экспорт конфиг",
+    daily_report: "📊 Ежедневный отчёт", server_logs: "📋 Логи сервера",
+    online_users: "🟢 Онлайн пользователи", versions: "📋 Версии",
+    user_backups: "💾 Резервные копии", api_tokens: "🔑 API токены",
+    outbounds: "📡 Outbounds", settings: "⚙️ Настройки панели",
+    outbound_traffic: "📤 Трафик Outbound", reset_inbound_traffic: "📥 Сброс Inbound трафика",
+    ban_menu: "🚫 Бан/Приостановка", manage_admins: "👥 Админы",
+    error_logs: "📋 Логи ошибок", chart_traffic: "📊 График трафика",
+    stars_payment: "⭐ Оплата Stars",
+    buy_subscription: "⭐ Купить подписку",
+    main_menu: "🔙 Главное меню", back: "🔙", cancel: "❌ Отмена",
+    confirm: "✅ Подтвердить", yes: "✅ Да", no: "❌ Нет",
+    delete: "🗑 Удалить", refresh: "🔄 Обновить",
+    language: "🌐 Язык", github: "🐙 GitHub",
+    no_access: "⛔ Нет доступа", super_only: "⛔ Только супер-админ",
+    not_found: "❌ Не найдено", error: "❌ Ошибка", success: "✅ Успешно",
+    select_server: "🖥️ Выберите ваш сервер:",
+    enter_email: "📧 Введите ваш email/ID:",
+    enter_days: "📅 Введите количество дней (напр. 30):",
+    enter_gb: "📦 Введите объём в ГБ (напр. 50, 0 для безлимита):",
+    welcome: "👋 Добро пожаловать в бот управления VPN!",
+    reg_success: "✅ Регистрация успешна!",
+    reg_cancel: "🔙 Начать заново",
+    user_created_count: "📊 Создано пользователей",
+    admin_limit: "💡 Вы можете только создавать, продлевать или удалять пользователей.",
+    admin_own_users: "💡 Вы имеете доступ только к созданным вами пользователям.",
+    server: "🖥 Сервер", identifier: "🔹 ID", total: "📦 Всего",
+    used: "📊 Использовано", upload: "⬆️ Загрузка", download: "⬇️ Скачивание",
+    remaining: "💾 Остаток", percent: "📈 Использование",
+    expiry: "📅 Истечение", remaining_time: "⏳ Осталось времени",
+    status: "Статус", active: "🟢 Активен", expired: "⏰ Истёк",
+    disabled: "⛔ Отключён", depleted: "📦 Исчерпан",
+    last_activity: "🟢 Последняя активность",
+    usage: "📊 Ваше использование", renew: "🔄 Запрос продления",
+    support: "🎧 Поддержка", sub_link: "🔗 Ссылка подписки",
+    backup_info: "📋 Информация о резервной копии", help: "❓ Помощь",
+    unlimited: "Безлимит",
+    ssh_terminal: "🖥️ SSH терминал", ssh_select_server: "🖥️ Выберите сервер:",
+    ssh_enter_command: "💻 Введите команду (напр. ls -la):",
+    ssh_output: "📤 Вывод:", ssh_connected: "✅ Подключено",
+    ssh_not_configured: "❌ SSH мост не настроен для этого сервера.",
+    ssh_running: "⏳ Выполнение...",
+  },
+};
+
+function t(lang, key) {
+  const l = I18N[lang] || I18N.fa;
+  return l[key] || I18N.fa[key] || key;
+}
+
+async function getUserLang(env, chatId) {
+  const user = await getUser(env, chatId);
+  if (user?.language) return user.language;
+  // For admins who aren't registered users, check KV
+  const adminLang = await kvGet(env, `lang:${chatId}`);
+  return adminLang || "fa";
+}
+
+async function setUserLang(env, chatId, lang) {
+  const user = await getUser(env, chatId);
+  if (user) {
+    user.language = lang;
+    await kvPut(env, `${KV_USERS_PREFIX}${chatId}`, user);
+  } else {
+    // For admins who aren't registered users
+    await kvPut(env, `lang:${chatId}`, lang);
+  }
+}
+
+// ─── Telegram Stars Payment ───────────────────────────────────
+// Allows panel admins to pay super admins using Telegram Stars (XTR).
+// Super admin sets up payment plans; panel admins can buy credits.
+
+const KV_STARS_PLANS = "stars:plans";
+const KV_STARS_PAYMENTS = "stars:payments";
+
+async function getStarsPlans(env) {
+  return (await kvGet(env, KV_STARS_PLANS)) || [];
+}
+
+async function saveStarsPlans(env, plans) {
+  await kvPut(env, KV_STARS_PLANS, plans);
+}
+
+async function recordStarsPayment(env, payment) {
+  const payments = (await kvGet(env, KV_STARS_PAYMENTS)) || [];
+  payments.unshift(payment);
+  if (payments.length > 100) payments.length = 100;
+  await kvPut(env, KV_STARS_PAYMENTS, payments);
+}
+
+async function getStarsPayments(env) {
+  return (await kvGet(env, KV_STARS_PAYMENTS)) || [];
+}
+
+/**
+ * Send a Telegram Stars invoice.
+ * Telegram Stars uses currency="XTR" and provider_token="" (empty).
+ */
+async function sendStarsInvoice(chatId, title, description, prices, payload, env, photoUrl = null) {
+  const token = getBotToken(env);
+  const payload_data = {
+    chat_id: String(chatId),
+    title: String(title).slice(0, 32),
+    description: String(description).slice(0, 255),
+    payload: JSON.stringify(payload),
+    currency: "XTR",
+    prices: prices, // [{ label, amount }] — amount in Stars (integer)
+  };
+  // provider_token must be empty for Stars payments
+  payload_data.provider_token = "";
+  if (photoUrl) payload_data.photo_url = photoUrl;
+
+  const response = await fetch(`https://api.telegram.org/bot${token}/sendInvoice`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload_data),
+  });
+  return assertOk(response, "sendInvoice");
+}
+
+/**
+ * Super admin: manage Stars payment plans.
+ * Plans are stored as: [{ id, name, stars, description }]
+ */
+async function handleStarsMenu(chatId, env) {
+  const plans = await getStarsPlans(env);
+  let msg = "⭐ مدیریت پرداخت Stars\n\n";
+  if (plans.length) {
+    msg += "📋 طرح‌های موجود:\n";
+    for (const p of plans) {
+      msg += `• ${p.name}: ${p.stars} Stars — ${p.description || ""}\n`;
+    }
+  } else {
+    msg += "❌ هیچ طرحی تعریف نشده است.\n";
+  }
+  msg += "\n👇 انتخاب کنید:";
+
+  const buttons = [
+    [{ text: "➕ افزودن طرح", callback_data: "stars_add" }],
+    [{ text: "📋 لیست پرداخت‌ها", callback_data: "stars_payments" }],
+    [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+  ];
+  await sendTelegram(chatId, msg, env, buttons);
+}
+
+/**
+ * Show available plans for panel admins to buy.
+ */
+async function handleStarsBuy(chatId, env) {
+  const plans = await getStarsPlans(env);
+  if (!plans.length) {
+    await sendTelegramWithBack(chatId, "❌ هیچ طرح پرداختی در دسترس نیست.", env);
+    return;
+  }
+  const isAdmin = await isAdminAsync(chatId, env);
+  const backTarget = isAdmin ? "admin_back" : "user_back";
+  let msg = "⭐ خرید اشتراک\n\n💡 با Stars تلگرام پرداخت کنید:\n";
+  const buttons = plans.map(p => [{
+    text: `${p.name} — ${p.stars}⭐`,
+    callback_data: `stars_buy:${p.id}`,
+  }]);
+  buttons.push([{ text: "🔙 منوی اصلی", callback_data: backTarget }]);
+  await sendTelegram(chatId, msg, env, buttons);
+}
+
+// ─── SSH Terminal Module (using ssh-bridge.js with context detection) ───
+// Uses ssh-bridge.js deployed on each server to execute commands.
+// The bridge detects interactive prompts (apt dialogs, confirm dialogs, etc.)
+// and returns suggested buttons so the admin can respond without getting stuck.
+//
+// Panel config fields:
+//   sshBridgeUrl: "http://YOUR_SERVER:8022"
+//   sshBridgeToken: "YOUR_BRIDGE_TOKEN"
+
+async function executeSshCommand(panel, command, env) {
+  const bridgeUrl = panel.sshBridgeUrl || env?.SSH_BRIDGE_URL;
+  const bridgeToken = panel.sshBridgeToken || env?.SSH_BRIDGE_TOKEN;
+  if (!bridgeUrl) {
+    throw new Error("SSH bridge not configured. Set sshBridgeUrl in panel config or SSH_BRIDGE_URL env var.");
+  }
+
+  const response = await fetch(`${bridgeUrl.replace(/\/+$/, "")}/exec`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: bridgeToken || "", command }),
+  });
+
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { output: text }; }
+
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (data.error) throw new Error(data.error);
+
+  return data;
+}
+
+/**
+ * Send input to an SSH session (for interactive commands).
+ * The bridge re-runs the command with the input piped in.
+ */
+async function sendSshInput(panel, sessionId, input, env) {
+  const bridgeUrl = panel.sshBridgeUrl || env?.SSH_BRIDGE_URL;
+  const bridgeToken = panel.sshBridgeToken || env?.SSH_BRIDGE_TOKEN;
+  if (!bridgeUrl) throw new Error("SSH bridge not configured");
+
+  const response = await fetch(`${bridgeUrl.replace(/\/+$/, "")}/send`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token: bridgeToken || "", sessionId, input }),
+  });
+
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { output: text }; }
+
+  if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+  if (data.error) throw new Error(data.error);
+
+  return data;
+}
+
+/**
+ * Build Telegram buttons from SSH bridge's suggested buttons.
+ * Returns an array of button rows.
+ */
+function buildSshButtons(suggestedButtons, sessionId, panelId, lang) {
+  if (!suggestedButtons || !suggestedButtons.length) {
+    // Default buttons when no context detected
+    return [
+      [
+        { text: "⏎ Enter", callback_data: `act:${0}` },
+        { text: "Y + ⏎", callback_data: `act:${1}` },
+        { text: "N + ⏎", callback_data: `act:${2}` },
+      ],
+      [
+        { text: "⌨️ New Command", callback_data: `ssh_panel:${panelId}` },
+        { text: "📋 Quick", callback_data: `ssh_quick:${panelId}` },
+      ],
+      [{ text: t(lang, "main_menu"), callback_data: "admin_back" }],
+    ];
+  }
+
+  // Build buttons from suggested inputs (max 3 per row)
+  const buttons = [];
+  for (let i = 0; i < suggestedButtons.length; i += 3) {
+    const row = [];
+    for (let j = i; j < Math.min(i + 3, suggestedButtons.length); j++) {
+      // Use action token for each button
+      // We'll store the input and sessionId in the action
+      row.push({
+        text: suggestedButtons[j].label,
+        callback_data: `act:__placeholder__`, // Will be replaced below
+      });
+    }
+    buttons.push(row);
+  }
+  buttons.push([
+    { text: "⌨️ New Command", callback_data: `ssh_panel:${panelId}` },
+    { text: "📋 Quick", callback_data: `ssh_quick:${panelId}` },
+  ]);
+  buttons.push([{ text: t(lang, "main_menu"), callback_data: "admin_back" }]);
+
+  return buttons;
+}
+
+async function sendSshServerSelect(chatId, env, lang = "fa") {
+  const panels = await getPanels(env);
+  const L = (k) => t(lang, k);
+  const buttons = [];
+  for (const p of panels) {
+    if (p.sshBridgeUrl || env?.SSH_BRIDGE_URL) {
+      buttons.push([{ text: `🖥 ${p.name}`, callback_data: `ssh_panel:${p.id}` }]);
+    }
+  }
+  if (!buttons.length) {
+    await sendTelegram(chatId,
+      t(lang, "ssh_not_configured") +
+      "\n\n💡 Setup:\n1. Copy ssh-bridge.js to your server\n2. Run: node ssh-bridge.js\n3. Set sshBridgeUrl in panel config", env, [
+      [{ text: L("main_menu"), callback_data: "admin_back" }],
+    ]);
+    return;
+  }
+  buttons.push([{ text: L("main_menu"), callback_data: "admin_back" }]);
+  await sendTelegram(chatId, L("ssh_select_server"), env, buttons);
+}
+
+async function handleSsh(chatId, args, env) {
+  const lang = await getUserLang(env, chatId);
+  await sendSshServerSelect(chatId, env, lang);
+}
+
 // ─── HTTP API ─────────────────────────────────────────────────
 
 async function handleUsageAPI(url, env) {
@@ -3986,12 +4791,379 @@ async function handleUsageAPI(url, env) {
   }
 }
 
+// ─── Cloudflare API Module ────────────────────────────────────
+// Allows super admins to manage DNS records on their Cloudflare
+// account directly from Telegram. Token is read from env.CLOUDFLARE_API_TOKEN
+// (set via `wrangler secret put CLOUDFLARE_API_TOKEN`).
+
+const CF_API_BASE = "https://api.cloudflare.com/client/v4";
+
+function getCfToken(env) {
+  return String(env?.CLOUDFLARE_API_TOKEN || "").trim();
+}
+
+async function cfApi(env, path, method = "GET", body = null) {
+  const token = getCfToken(env);
+  if (!token) {
+    throw new Error("CLOUDFLARE_API_TOKEN تنظیم نشده است. با `wrangler secret put CLOUDFLARE_API_TOKEN` آن را اضافه کنید.");
+  }
+  const url = path.startsWith("http") ? path : `${CF_API_BASE}${path}`;
+  const headers = {
+    "Authorization": `Bearer ${token}`,
+    "Content-Type": "application/json",
+  };
+  const options = { method, headers };
+  if (body !== null && method !== "GET") options.body = JSON.stringify(body);
+
+  const response = await fetch(url, options);
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  if (!response.ok) {
+    const errs = data?.errors || [];
+    const errMsg = errs.length
+      ? errs.map(e => `${e.code}: ${e.message}`).join("; ")
+      : `HTTP ${response.status}`;
+    throw new Error(`Cloudflare API: ${errMsg}`);
+  }
+  if (data && data.success === false) {
+    const errs = data?.errors || [];
+    throw new Error(`Cloudflare: ${errs.map(e => e.message).join("; ") || "unknown error"}`);
+  }
+  return data?.result ?? data;
+}
+
+// ─── Cloudflare: Zones ────────────────────────────────────────
+
+async function cfListZones(env) {
+  // CF returns paginated zones — fetch first 50 (enough for most users)
+  const result = await cfApi(env, `/zones?per_page=50`, "GET");
+  return Array.isArray(result) ? result : [];
+}
+
+async function cfGetZone(env, zoneId) {
+  return await cfApi(env, `/zones/${encodeURIComponent(zoneId)}`, "GET");
+}
+
+// ─── Cloudflare: DNS Records ──────────────────────────────────
+
+async function cfListDnsRecords(env, zoneId) {
+  const result = await cfApi(env, `/zones/${encodeURIComponent(zoneId)}/dns_records?per_page=100`, "GET");
+  return Array.isArray(result) ? result : [];
+}
+
+async function cfCreateDnsRecord(env, zoneId, payload) {
+  // payload: { type, name, content, ttl, proxied, priority }
+  return await cfApi(env, `/zones/${encodeURIComponent(zoneId)}/dns_records`, "POST", payload);
+}
+
+async function cfUpdateDnsRecord(env, zoneId, recordId, payload) {
+  return await cfApi(env, `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`, "PUT", payload);
+}
+
+async function cfDeleteDnsRecord(env, zoneId, recordId) {
+  return await cfApi(env, `/zones/${encodeURIComponent(zoneId)}/dns_records/${encodeURIComponent(recordId)}`, "DELETE");
+}
+
+// ─── Cloudflare: Formatting ───────────────────────────────────
+
+function formatCfZone(zone, lang = "fa") {
+  if (!zone) return lang === "en" ? "Zone not found" : "دامنه یافت نشد";
+  const status = zone.status === "active"
+    ? (lang === "en" ? "🟢 Active" : "🟢 فعال")
+    : (lang === "en" ? "⏳ Pending" : "⏳ در انتظار");
+  const lines = lang === "en"
+    ? [
+        `🌐 Zone: ${zone.name}`,
+        `🆔 ID: ${zone.id}`,
+        `${status}`,
+        `👤 Account: ${zone.account?.name || "—"}`,
+        ``,
+        `📊 Statistics:`,
+        `   Records: ${zone.meta?.record_count ?? "?"}`,
+      ]
+    : [
+        `🌐 دامنه: ${zone.name}`,
+        `🆔 شناسه: ${zone.id}`,
+        `${status}`,
+        `👤 اکانت: ${zone.account?.name || "—"}`,
+        ``,
+        `📊 آمار:`,
+        `   رکوردها: ${zone.meta?.record_count ?? "?"}`,
+      ];
+  return lines.join("\n");
+}
+
+function formatCfDnsRecord(rec, lang = "fa") {
+  if (!rec) return lang === "en" ? "Record not found" : "رکورد یافت نشد";
+  const proxied = rec.proxied
+    ? (lang === "en" ? "🟠 Proxied" : "🟠 پروکسی")
+    : (lang === "en" ? "⚪ DNS Only" : "⚪ فقط DNS");
+  const ttl = rec.ttl === 1
+    ? (lang === "en" ? "Auto" : "خودکار")
+    : `${rec.ttl}s`;
+  return [
+    `${lang === "en" ? "🆔 ID" : "🆔 شناسه"}: ${rec.id}`,
+    `${lang === "en" ? "🏷 Type" : "🏷 نوع"}: ${rec.type}`,
+    `${lang === "en" ? "📛 Name" : "📛 نام"}: ${rec.name}`,
+    `${lang === "en" ? "📄 Content" : "📄 محتوا"}: ${rec.content}`,
+    `${proxied} | TTL: ${ttl}`,
+  ].join("\n");
+}
+
+// ─── Cloudflare: Menu Rendering ───────────────────────────────
+
+/**
+ * Create a short callback_data for Cloudflare actions that would otherwise
+ * exceed Telegram's 64-byte limit.
+ *
+ * Cloudflare zone IDs are 32-char hex strings, and DNS record IDs are also
+ * 32-char hex strings. Combined with the action prefix, callbacks like
+ * `cf_dns_toggle:ZONE_ID:RECORD_ID` reach 79 bytes — well over the limit.
+ *
+ * This function stores the full callback_data in BOT_STATE (via setAction)
+ * and returns a short `act:TOKEN` that fits within the limit.
+ *
+ * Usage:
+ *   const cb = await cfCallback(chatId, "cf_dns_toggle", zoneId, recordId, env);
+ *   // cb = "act:abc12345" (12 bytes, well under 64)
+ */
+async function cfCallback(chatId, action, zoneId, recordId, env) {
+  // Store as a CF action with zoneId:recordId as the identifier
+  // Use "cf_zone" as the panelId so the act: handler knows it's a CF action
+  const token = await setAction(chatId, action, `${zoneId}:${recordId}`, env, "cf_zone");
+  return `act:${token}`;
+}
+
+async function sendCfMainMenu(chatId, env, lang = "fa") {
+  const isFa = lang !== "en";
+  const menuText = isFa
+    ? "☁️ مدیریت Cloudflare\n\n👇 انتخاب کنید:"
+    : "☁️ Cloudflare Management\n\n👇 Select:";
+  const buttons = [
+    [
+      { text: isFa ? "🌐 دامنه‌ها (Zones)" : "🌐 Zones",
+        callback_data: "cf_zones" },
+    ],
+    [
+      { text: isFa ? "➕ افزودن DNS Record" : "➕ Add DNS Record",
+        callback_data: "cf_dns_add_zone" },
+    ],
+    [
+      { text: isFa ? "🌍 تعویض زبان" : "🌍 Switch Language",
+        callback_data: "cf_toggle_lang" },
+    ],
+    [
+      { text: isFa ? "🔙 منوی اصلی" : "🔙 Main Menu",
+        callback_data: "admin_back" },
+    ],
+  ];
+  await sendTelegram(chatId, menuText, env, buttons);
+}
+
+async function sendCfZonesList(chatId, env, lang = "fa") {
+  const isFa = lang !== "en";
+  try {
+    const zones = await cfListZones(env);
+    if (!zones.length) {
+      await sendTelegram(chatId,
+        isFa ? "❌ هیچ دامنه‌ای در اکانت Cloudflare شما یافت نشد." : "❌ No zones found in your Cloudflare account.",
+        env,
+        [[{ text: isFa ? "🔙" : "🔙", callback_data: "cf_back" }]]
+      );
+      return;
+    }
+    let msg = isFa
+      ? `🌐 دامنه‌های شما (${zones.length}):\n\n`
+      : `🌐 Your zones (${zones.length}):\n\n`;
+    for (const z of zones.slice(0, 30)) {
+      const icon = z.status === "active" ? "🟢" : "⏳";
+      msg += `${icon} ${z.name}\n`;
+    }
+    if (zones.length > 30) {
+      msg += isFa ? `\n... و ${zones.length - 30} دامنه دیگر` : `\n... and ${zones.length - 30} more`;
+    }
+    msg += `\n\n${isFa ? "👇 یک دامنه را برای مدیریت DNS انتخاب کنید:" : "👇 Select a zone to manage DNS:"}`;
+
+    const buttons = zones.slice(0, 30).map(z => [{
+      text: `${z.status === "active" ? "🟢" : "⏳"} ${z.name}`,
+      callback_data: `cf_zone:${z.id}`,
+    }]);
+    buttons.push([{ text: isFa ? "🔙 منوی Cloudflare" : "🔙 CF Menu", callback_data: "cf_back" }]);
+
+    await sendTelegram(chatId, msg, env, buttons);
+  } catch (error) {
+    await sendTelegram(chatId, `❌ ${shortError(error)}`, env,
+      [[{ text: isFa ? "🔙" : "🔙", callback_data: "cf_back" }]]
+    );
+  }
+}
+
+async function sendCfZoneDnsRecords(chatId, env, zoneId, lang = "fa", page = 1) {
+  const isFa = lang !== "en";
+  try {
+    const [zone, records] = await Promise.all([
+      cfGetZone(env, zoneId).catch(() => null),
+      cfListDnsRecords(env, zoneId),
+    ]);
+    const zoneName = zone?.name || zoneId;
+    if (!records.length) {
+      await sendTelegram(chatId,
+        isFa ? `❌ هیچ رکورد DNS برای "${zoneName}" یافت نشد.` : `❌ No DNS records for "${zoneName}".`,
+        env,
+        [
+          [{ text: isFa ? "➕ افزودن رکورد" : "➕ Add Record", callback_data: `cf_dns_add_type:${zoneId}` }],
+          [{ text: isFa ? "🔙 دامنه‌ها" : "🔙 Zones", callback_data: "cf_zones" }],
+        ]
+      );
+      return;
+    }
+
+    const perPage = 15;
+    const start = (page - 1) * perPage;
+    const pageRecords = records.slice(start, start + perPage);
+    const totalPages = Math.ceil(records.length / perPage);
+
+    let msg = isFa
+      ? `📋 رکوردهای DNS "${zoneName}" (صفحه ${page}/${totalPages}):\n\n`
+      : `📋 DNS Records for "${zoneName}" (page ${page}/${totalPages}):\n\n`;
+    for (const r of pageRecords) {
+      const proxyIcon = r.proxied ? "🟠" : "⚪";
+      msg += `${proxyIcon} ${r.type} | ${r.name} → ${r.content.slice(0, 50)}\n`;
+    }
+
+    const buttons = [];
+    for (const r of pageRecords.slice(0, 15)) {
+      buttons.push([{
+        text: `${r.proxied ? "🟠" : "⚪"} ${r.type}: ${r.name.slice(0, 30)}`,
+        callback_data: await cfCallback(chatId, "cf_dns", zoneId, r.id, env),
+      }]);
+    }
+    // Pagination
+    const navBtns = [];
+    if (page > 1) navBtns.push({ text: "◀", callback_data: `cf_dns_page:${zoneId}:${page - 1}` });
+    if (page < totalPages) navBtns.push({ text: "▶", callback_data: `cf_dns_page:${zoneId}:${page + 1}` });
+    if (navBtns.length) buttons.push(navBtns);
+    buttons.push([{ text: isFa ? "➕ افزودن رکورد" : "➕ Add Record", callback_data: `cf_dns_add_type:${zoneId}` }]);
+    buttons.push([{ text: isFa ? "🔙 دامنه‌ها" : "🔙 Zones", callback_data: "cf_zones" }]);
+
+    await sendTelegram(chatId, msg, env, buttons);
+  } catch (error) {
+    await sendTelegram(chatId, `❌ ${shortError(error)}`, env,
+      [[{ text: isFa ? "🔙" : "🔙", callback_data: "cf_zones" }]]
+    );
+  }
+}
+
+async function sendCfDnsRecordDetail(chatId, env, zoneId, recordId, lang = "fa") {
+  const isFa = lang !== "en";
+  try {
+    const [zone, records] = await Promise.all([
+      cfGetZone(env, zoneId).catch(() => null),
+      cfListDnsRecords(env, zoneId),
+    ]);
+    const record = records.find(r => r.id === recordId);
+    if (!record) {
+      await sendTelegram(chatId,
+        isFa ? "❌ رکورد یافت نشد." : "❌ Record not found.",
+        env,
+        [[{ text: isFa ? "🔙" : "🔙", callback_data: `cf_zone:${zoneId}` }]]
+      );
+      return;
+    }
+    const msg = formatCfDnsRecord(record, lang) +
+      `\n\n${isFa ? `🌐 دامنه: ${zone?.name || zoneId}` : `🌐 Zone: ${zone?.name || zoneId}`}`;
+    // Use action tokens for toggle/delete — callback_data would exceed 64 bytes
+    // because CF zone IDs and record IDs are both 32-char hex strings.
+    const toggleCb = await cfCallback(chatId, "cf_dns_toggle", zoneId, recordId, env);
+    const delCb = await cfCallback(chatId, "cf_dns_del_confirm", zoneId, recordId, env);
+    const buttons = [
+      [
+        { text: record.proxied
+            ? (isFa ? "⚪ غیرفعال‌کردن پروکسی" : "⚪ Disable Proxy")
+            : (isFa ? "🟠 فعال‌کردن پروکسی" : "🟠 Enable Proxy"),
+          callback_data: toggleCb },
+      ],
+      [
+        { text: isFa ? "🗑 حذف رکورد" : "🗑 Delete Record",
+          callback_data: delCb },
+      ],
+      [
+        { text: isFa ? "🔙 رکوردها" : "🔙 Records", callback_data: `cf_zone:${zoneId}` },
+      ],
+    ];
+    await sendTelegram(chatId, msg, env, buttons);
+  } catch (error) {
+    await sendTelegram(chatId, `❌ ${shortError(error)}`, env,
+      [[{ text: isFa ? "🔙" : "🔙", callback_data: `cf_zone:${zoneId}` }]]
+    );
+  }
+}
+
 // ─── Telegram Update Handler ──────────────────────────────────
 
 async function handleTelegramUpdate(update, env) {
   try {
     if (update.callback_query) {
       await handleCallbackQuery(update.callback_query, env);
+      return;
+    }
+
+    // Handle Telegram Stars pre-checkout query (must respond within 10 seconds)
+    if (update.pre_checkout_query) {
+      const token = getBotToken(env);
+      try {
+        await fetch(`https://api.telegram.org/bot${token}/answerPreCheckoutQuery`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            pre_checkout_query_id: update.pre_checkout_query.id,
+            ok: true,
+          }),
+        });
+      } catch (e) {
+        console.error("answerPreCheckoutQuery error:", shortError(e));
+      }
+      return;
+    }
+
+    // Handle successful Stars payment
+    if (update.message?.successful_payment) {
+      const payment = update.message.successful_payment;
+      const chatId = String(update.message.chat.id);
+      try {
+        const payload = JSON.parse(payment.invoice_payload || "{}");
+        if (payload.type === "stars_payment") {
+          // Record the payment
+          await recordStarsPayment(env, {
+            chatId,
+            stars: payload.stars || payment.total_amount || 0,
+            planId: payload.planId,
+            planName: payload.planName,
+            currency: payment.currency,
+            timestamp: Date.now(),
+          });
+
+          // Notify all super admins about the payment
+          const adminIds = await getSuperAdminIds(env);
+          const msg =
+            `⭐ پرداخت Stars دریافت شد!\n\n` +
+            `👤 از: ${chatId}\n` +
+            `📋 طرح: ${payload.planName || "نامشخص"}\n` +
+            `⭐ مبلغ: ${payload.stars || payment.total_amount} Stars\n` +
+            `🕐 زمان: ${new Date().toLocaleString("fa-IR")}`;
+          for (const adminId of adminIds) {
+            try { await sendTelegram(adminId, msg, env); } catch { /* ignore */ }
+          }
+
+          // Confirm to payer
+          await sendTelegram(chatId,
+            `✅ پرداخت شما با موفقیت ثبت شد!\n\n⭐ ${payload.stars || payment.total_amount} Stars\n📋 ${payload.planName || ""}`, env);
+        }
+      } catch (e) {
+        console.error("Payment processing error:", shortError(e));
+      }
       return;
     }
 
@@ -4053,7 +5225,7 @@ async function handleTelegramUpdate(update, env) {
     if (addgbState) {
       await stateDelete(env, `addgb_action:${chatId}`);
       if (!admin) {
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       const gb = Number(text);
@@ -4090,7 +5262,7 @@ async function handleTelegramUpdate(update, env) {
     if (renewActionState) {
       await stateDelete(env, `renew_action:${chatId}`);
       if (!admin) {
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       const days = Number(text);
@@ -4127,7 +5299,7 @@ async function handleTelegramUpdate(update, env) {
     if (searchState) {
       await stateDelete(env, `search_action:${chatId}`);
       if (!admin) {
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       const identifier = normalizeIdentifier(text);
@@ -4146,7 +5318,7 @@ async function handleTelegramUpdate(update, env) {
     if (createAction) {
       if (!admin) {
         await stateDelete(env, `create_action:${chatId}`);
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       if (createAction.step === "email") {
@@ -4161,7 +5333,7 @@ async function handleTelegramUpdate(update, env) {
       if (createAction.step === "days") {
         const days = Number(text);
         if (isNaN(days) || days <= 0) {
-          await sendTelegram(chatId, "❌ مقدار نامعتبر. تعداد روز را وارد کنید:", env);
+          await sendTelegramWithBack(chatId, "❌ مقدار نامعتبر. تعداد روز را وارد کنید:", env);
           return;
         }
         createAction.days = days;
@@ -4184,7 +5356,7 @@ async function handleTelegramUpdate(update, env) {
             return;
           }
 
-          // Check maxUsers limit for panel admins (interactive flow)
+          // Check maxUsers and maxTrafficGB limits for panel admins (interactive flow)
           const role = await getAdminRole(env, chatId);
           if (role && role.role === "admin") {
             const cnt = await getAdminCreatedCount(env, chatId);
@@ -4194,6 +5366,23 @@ async function handleTelegramUpdate(update, env) {
                 [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
               ]);
               return;
+            }
+            // Check maxTrafficGB limit
+            const maxTraffic = role.maxTrafficGB || 0;
+            if (maxTraffic > 0) {
+              const usedTrafficGB = await getAdminCreatedTrafficGB(env, chatId);
+              const newClientTrafficGB = (gb > 0 ? gb : 0); // The new client's allocated volume
+              if (usedTrafficGB + newClientTrafficGB > maxTraffic) {
+                await sendTelegram(chatId,
+                  `❌ محدودیت حجم رسید!\n\n` +
+                  `📊 حجم مصرفی کاربران شما: ${usedTrafficGB.toFixed(2)} GB\n` +
+                  `📦 حجم جدید درخواستی: ${newClientTrafficGB} GB\n` +
+                  `🚫 محدودیت کل: ${maxTraffic} GB\n\n` +
+                  `💡 برای افزایش محدودیت با سوپر ادمین تماس بگیرید.`, env, [
+                    [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+                  ]);
+                return;
+              }
             }
           }
 
@@ -4235,7 +5424,7 @@ async function handleTelegramUpdate(update, env) {
     if (xrayUpdateState) {
       await stateDelete(env, `xray_update_action:${chatId}`);
       if (!admin) {
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       const version = normalizeIdentifier(text);
@@ -4381,12 +5570,215 @@ async function handleTelegramUpdate(update, env) {
       }
     }
 
+    // Check Cloudflare DNS add action state (multi-step FSM)
+    const cfAddState = await stateGet(env, `cf_add_action:${chatId}`);
+    if (cfAddState) {
+      if (!admin) {
+        await stateDelete(env, `cf_add_action:${chatId}`);
+        await sendTelegram(chatId, "❌ دسترسی ندارید.", env, [[{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }]]);
+        return;
+      }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) {
+        await stateDelete(env, `cf_add_action:${chatId}`);
+        await sendTelegram(chatId, "❌ فقط سوپر ادمین.", env, [[{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }]]);
+        return;
+      }
+
+      // Step: name → store, ask for content
+      if (cfAddState.step === "name") {
+        const name = text.trim();
+        if (!name) {
+          await sendTelegram(chatId, "❌ نام نامعتبر. دوباره وارد کنید:", env, [[{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }]]);
+          return;
+        }
+        cfAddState.name = name;
+        cfAddState.step = "content";
+        await statePut(env, `cf_add_action:${chatId}`, cfAddState, MS_PER_HOUR);
+        const example = cfAddState.type === "A" ? "192.168.1.1"
+          : cfAddState.type === "AAAA" ? "2001:db8::1"
+          : cfAddState.type === "CNAME" ? "target.example.com"
+          : cfAddState.type === "MX" ? "10 mail.example.com"
+          : cfAddState.type === "TXT" ? "v=spf1 include:_spf.example.com ~all"
+          : "value";
+        await sendTelegram(chatId,
+          `📄 محتوای record را وارد کنید (مثلاً ${example}):\n\n💡 نوع: ${cfAddState.type} | نام: ${name}`,
+          env,
+          [[{ text: "❌ انصراف", callback_data: "cf_back" }]]
+        );
+        return;
+      }
+
+      // Step: content → store, ask for proxied
+      if (cfAddState.step === "content") {
+        const content = text.trim();
+        if (!content) {
+          await sendTelegram(chatId, "❌ محتوا نامعتبر. دوباره وارد کنید:", env, [[{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }]]);
+          return;
+        }
+        cfAddState.content = content;
+        cfAddState.step = "proxied";
+        await statePut(env, `cf_add_action:${chatId}`, cfAddState, MS_PER_HOUR);
+        await sendTelegram(chatId,
+          `🟠 آیا این record از پروکسی Cloudflare استفاده کند؟\n\n💡 پروکسی = ترافیک از Cloudflare عبور می‌کند (پنهان‌کردن IP سرور)\n⚪ فقط DNS = مستقیم به سرور شما`,
+          env,
+          [
+            [
+              { text: "🟠 پروکسی (Proxied)", callback_data: "cf_dns_add_proxied:1" },
+              { text: "⚪ فقط DNS (DNS Only)", callback_data: "cf_dns_add_proxied:0" },
+            ],
+            [{ text: "❌ انصراف", callback_data: "cf_back" }],
+          ]
+        );
+        return;
+      }
+    }
+
+    // Check SSH command input state
+    const sshState = await stateGet(env, `ssh_action:${chatId}`);
+    if (sshState && sshState.step === "command") {
+      if (!admin) {
+        await stateDelete(env, `ssh_action:${chatId}`);
+        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        return;
+      }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) {
+        await stateDelete(env, `ssh_action:${chatId}`);
+        await sendTelegram(chatId, "❌ فقط سوپر ادمین.", env);
+        return;
+      }
+      const command = text.trim();
+      if (!command) { await sendTelegram(chatId, "❌ Command empty.", env); return; }
+      await stateDelete(env, `ssh_action:${chatId}`);
+      const lang = await getUserLang(env, chatId);
+      const panel = await resolvePanelAsync(env, sshState.panelId);
+      if (!panel) {
+        await sendTelegram(chatId, "❌ Panel not found.", env, [
+          [{ text: t(lang, "main_menu"), callback_data: "admin_back" }],
+        ]);
+        return;
+      }
+      try {
+        await sendTelegram(chatId, t(lang, "ssh_running"), env);
+        const result = await executeSshCommand(panel, command, env);
+
+        // Build output message with context info
+        const ctxLabel = result.context && result.context !== 'shell' ? ` (${result.context})` : '';
+        const msg = `💻 ${command}${ctxLabel}\n\n${t(lang, "ssh_output")}\n\`\`\`\n${(result.output || '(no output)').slice(0, 3500)}\n\`\`\``;
+
+        // Build buttons from bridge's suggested buttons + always show default actions
+        const buttons = [];
+        const suggested = result.buttons || [];
+
+        if (suggested.length) {
+          // Use bridge-suggested buttons (context-specific)
+          for (let i = 0; i < suggested.length; i += 3) {
+            const row = [];
+            for (let j = i; j < Math.min(i + 3, suggested.length); j++) {
+              const token = await setAction(chatId, "ssh_interactive",
+                `${sshState.panelId}|||${suggested[j].input}|||${result.sessionId || ''}`, env, "ssh");
+              row.push({ text: suggested[j].label, callback_data: `act:${token}` });
+            }
+            buttons.push(row);
+          }
+        } else {
+          // Default buttons (no interactive prompt detected)
+          const tEnter = await setAction(chatId, "ssh_interactive", `${sshState.panelId}|||  |||${result.sessionId || ''}`, env, "ssh");
+          const tY = await setAction(chatId, "ssh_interactive", `${sshState.panelId}|||y|||${result.sessionId || ''}`, env, "ssh");
+          const tN = await setAction(chatId, "ssh_interactive", `${sshState.panelId}|||n|||${result.sessionId || ''}`, env, "ssh");
+          buttons.push([
+            { text: "⏎ Enter", callback_data: `act:${tEnter}` },
+            { text: "Y + ⏎", callback_data: `act:${tY}` },
+            { text: "N + ⏎", callback_data: `act:${tN}` },
+          ]);
+        }
+
+        buttons.push([
+          { text: "⌨️ New Command", callback_data: `ssh_panel:${sshState.panelId}` },
+          { text: "📋 Quick Commands", callback_data: `ssh_quick:${sshState.panelId}` },
+        ]);
+        buttons.push([{ text: t(lang, "main_menu"), callback_data: "admin_back" }]);
+
+        await sendTelegram(chatId, msg, env, buttons);
+      } catch (e) {
+        await sendTelegram(chatId, `❌ SSH error: ${shortError(e)}`, env, [
+          [
+            { text: "🔄 Retry", callback_data: `ssh_panel:${sshState.panelId}` },
+            { text: t(lang, "main_menu"), callback_data: "admin_back" },
+          ],
+        ]);
+      }
+      return;
+    }
+
+    // Check Stars add plan action state (multi-step FSM)
+    const starsAddState = await stateGet(env, `stars_add_action:${chatId}`);
+    if (starsAddState) {
+      if (!admin) {
+        await stateDelete(env, `stars_add_action:${chatId}`);
+        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        return;
+      }
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (!isSuper) {
+        await stateDelete(env, `stars_add_action:${chatId}`);
+        await sendTelegram(chatId, "❌ فقط سوپر ادمین.", env);
+        return;
+      }
+
+      if (starsAddState.step === "name") {
+        const name = text.trim();
+        if (!name) { await sendTelegram(chatId, "❌ نام نامعتبر.", env); return; }
+        starsAddState.name = name;
+        starsAddState.step = "stars";
+        await statePut(env, `stars_add_action:${chatId}`, starsAddState, MS_PER_HOUR);
+        await sendTelegram(chatId, "⭐ تعداد Stars را وارد کنید (مثلاً 100):", env, [
+          [{ text: "❌ انصراف", callback_data: "stars_menu" }],
+        ]);
+        return;
+      }
+      if (starsAddState.step === "stars") {
+        const stars = Number(text);
+        if (isNaN(stars) || stars <= 0) {
+          await sendTelegram(chatId, "❌ مقدار نامعتبر. عدد Stars را وارد کنید:", env);
+          return;
+        }
+        starsAddState.stars = stars;
+        starsAddState.step = "description";
+        await statePut(env, `stars_add_action:${chatId}`, starsAddState, MS_PER_HOUR);
+        await sendTelegram(chatId, "📝 توضیحات طرح را وارد کنید (یا 0 برای رد کردن):", env, [
+          [{ text: "❌ انصراف", callback_data: "stars_menu" }],
+        ]);
+        return;
+      }
+      if (starsAddState.step === "description") {
+        const description = text.trim() === "0" ? "" : text.trim();
+        await stateDelete(env, `stars_add_action:${chatId}`);
+        // Save the plan
+        const plans = await getStarsPlans(env);
+        const planId = generateToken(8);
+        plans.push({
+          id: planId,
+          name: starsAddState.name,
+          stars: starsAddState.stars,
+          description,
+        });
+        await saveStarsPlans(env, plans);
+        await sendTelegram(chatId,
+          `✅ طرح پرداخت اضافه شد!\n\n📋 نام: ${starsAddState.name}\n⭐ Stars: ${starsAddState.stars}\n📝 توضیحات: ${description || "—"}`, env, [
+            [{ text: "🔙 مدیریت Stars", callback_data: "stars_menu" }],
+          ]);
+        return;
+      }
+    }
+
     // Check admin node add action state
     const nodeAddState = await stateGet(env, `node_add_action:${chatId}`);
     if (nodeAddState) {
       if (!admin) {
         await stateDelete(env, `node_add_action:${chatId}`);
-        await sendTelegram(chatId, "❌ دسترسی ندارید.", env);
+        await sendTelegramWithBack(chatId, "❌ دسترسی ندارید.", env);
         return;
       }
       const panelId = nodeAddState.panelId;
@@ -4410,7 +5802,7 @@ async function handleTelegramUpdate(update, env) {
       if (nodeAddState.step === "port") {
         const port = Number(text);
         if (isNaN(port) || port <= 0 || port > 65535) {
-          await sendTelegram(chatId, "❌ پورت نامعتبر. عدد بین 1-65535 وارد کنید:", env);
+          await sendTelegramWithBack(chatId, "❌ پورت نامعتبر. عدد بین 1-65535 وارد کنید:", env);
           return;
         }
         nodeAddState.port = port;
@@ -4535,10 +5927,66 @@ async function handleTelegramUpdate(update, env) {
       return;
     }
 
+    if (command === "cf" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
+      if (!getCfToken(env)) {
+        await sendTelegram(chatId,
+          "❌ CLOUDFLARE_API_TOKEN تنظیم نشده است.\n\n" +
+          "💡 با دستور زیر آن را اضافه کنید:\n" +
+          "```\nwrangler secret put CLOUDFLARE_API_TOKEN\n```",
+          env);
+        return;
+      }
+      await sendCfMainMenu(chatId, env, "fa");
+      return;
+    }
+
+    if (command === "ssh" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
+      await handleSsh(chatId, args, env);
+      return;
+    }
+
+    if (command === "chart" && admin) {
+      if (await rejectCommandIfNotSuper(chatId, env)) return;
+      await handleChart(chatId, args, env);
+      return;
+    }
+
+    if (command === "lang") {
+      const lang = args[0];
+      const validLangs = ["fa", "en", "zh", "ru"];
+      if (!lang || !validLangs.includes(lang)) {
+        await sendTelegramWithBack(chatId,
+          "🌐 انتخاب زبان / Select language / 选择语言 / Выбор языка:\n\n" +
+          "/lang fa — فارسی\n" +
+          "/lang en — English\n" +
+          "/lang zh — 中文\n" +
+          "/lang ru — Русский", env);
+        return;
+      }
+      await setUserLang(env, chatId, lang);
+      const langNames = { fa: "فارسی", en: "English", zh: "中文", ru: "Русский" };
+      await sendTelegramWithBack(chatId, `✅ زبان تنظیم شد: ${langNames[lang]}`, env);
+      return;
+    }
+
+    if (command === "stars") {
+      const isAdmin = await isAdminAsync(chatId, env);
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (isSuper) {
+        await handleStarsMenu(chatId, env);
+      } else {
+        // Panel admins AND regular users can buy
+        await handleStarsBuy(chatId, env);
+      }
+      return;
+    }
+
     if (command === "report" && admin) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
       await sendDailyReportAllPanels(env);
-      await sendTelegram(chatId, "📊 گزارش روزانه ارسال شد.", env);
+      await sendTelegramWithBack(chatId, "📊 گزارش روزانه ارسال شد.", env);
       return;
     }
 
@@ -4617,7 +6065,7 @@ async function handleTelegramUpdate(update, env) {
     // ── Ban/Suspend (super admin) ──
     if (command === "ban" && admin) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
-      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /ban <chatId> [دلیل]", env); return; }
+      const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /ban <chatId> [دلیل]", env); return; }
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان بن کرد", env); return; }
       const r = args.slice(1).join(" ") || "";
       await banUser(env, t, r);
@@ -4627,7 +6075,7 @@ async function handleTelegramUpdate(update, env) {
     }
     if (command === "unban" && admin) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
-      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unban <chatId>", env); return; }
+      const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /unban <chatId>", env); return; }
       await unbanUser(env, t);
       await sendTelegram(chatId, `✅ "${t}" رفع بن شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       try { await sendTelegram(t, `✅ بن رفع شد.`, env); } catch {}
@@ -4636,7 +6084,7 @@ async function handleTelegramUpdate(update, env) {
     if (command === "suspend" && admin) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; const m = Number(args[1]);
-      if (!t || !m || m<=0) { await sendTelegram(chatId, "استفاده: /suspend <chatId> <دقیقه> [دلیل]", env); return; }
+      if (!t || !m || m<=0) { await sendTelegramWithBack(chatId, "استفاده: /suspend <chatId> <دقیقه> [دلیل]", env); return; }
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان تعلیق کرد", env); return; }
       const r = args.slice(2).join(" ") || "";
       await suspendUser(env, t, m, r);
@@ -4646,7 +6094,7 @@ async function handleTelegramUpdate(update, env) {
     }
     if (command === "unsuspend" && admin) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
-      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /unsuspend <chatId>", env); return; }
+      const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /unsuspend <chatId>", env); return; }
       await unsuspendUser(env, t);
       await sendTelegram(chatId, `✅ تعلیق "${t}" لغو شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       return;
@@ -4665,17 +6113,28 @@ async function handleTelegramUpdate(update, env) {
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
       const t = args[0]; const pids = args[1]||""; const mx = Number(args[2])||0;
-      if (!t || !pids) { await sendTelegram(chatId, "استفاده: /addadmin <chatId> <panelId1,panelId2> [maxUsers]", env); return; }
+      const maxTraffic = Number(args[3])||0; // maxTrafficGB (0 = unlimited)
+      if (!t || !pids) {
+        await sendTelegramWithBack(chatId,
+          "استفاده: /addadmin <chatId> <panelIds> [maxUsers] [maxTrafficGB]\n\n" +
+          "مثال: /addadmin 123456789 US,DE 50 1000\n" +
+          "(حداکثر ۵۰ کاربر، حداکثر ۱۰۰۰ GB ترافیک)", env);
+        return;
+      }
       const pl = pids.split(",").map(s=>s.trim()).filter(Boolean);
-      await addPanelAdmin(env, t, pl, mx);
-      await sendTelegram(chatId, `✅ ادمین "${t}" اضافه شد.\n🖥️ پنل: ${pl.join(", ")}\n📊 محدودیت: ${mx>0?mx:"نامحدود"}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await addPanelAdmin(env, t, pl, mx, maxTraffic);
+      await sendTelegram(chatId,
+        `✅ ادمین "${t}" اضافه شد.\n` +
+        `🖥️ پنل: ${pl.join(", ")}\n` +
+        `📊 محدودیت کاربر: ${mx>0?mx:"نامحدود"}\n` +
+        `📦 محدودیت حجم: ${maxTraffic>0?maxTraffic+" GB":"نامحدود"}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       try { await sendTelegram(t, `✅ ادمین شدید! پنل: ${pl.join(", ")}. /admin بزنید.`, env); } catch {}
       return;
     }
     if (command === "removeadmin" && admin) {
       const isSuper = await isSuperAdmin(env, chatId);
       if (!isSuper) { await sendTelegram(chatId, "❌ فقط سوپر ادمین", env); return; }
-      const t = args[0]; if (!t) { await sendTelegram(chatId, "استفاده: /removeadmin <chatId>", env); return; }
+      const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /removeadmin <chatId>", env); return; }
       // Can't remove super admins
       const targetRole = await getAdminRole(env, t);
       if (targetRole && targetRole.role === "super") { await sendTelegram(chatId, "❌ نمی‌توان سوپر ادمین را حذف کرد.", env); return; }
@@ -4687,7 +6146,14 @@ async function handleTelegramUpdate(update, env) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
       const list = await getAllAdminsWithRoles(env);
       let m = `👥 ادمین‌ها (${list.length}):\n\n`;
-      for (const a of list) { m += `${a.role==="super"?"👑":"🛠️"} ${a.chatId} — ${a.role==="super"?"سوپر":"پنل"} — ${a.createdCount} کاربر${a.maxUsers>0?`/${a.maxUsers}`:""}\n`; }
+      for (const a of list) {
+        m += `${a.role==="super"?"👑":"🛠️"} ${a.chatId} — ${a.role==="super"?"سوپر":"پنل"}\n`;
+        m += `   👤 ${a.createdCount} کاربر${a.maxUsers>0?`/${a.maxUsers}`:""}`;
+        if (a.role === "admin") {
+          m += ` | 📦 ${a.usedTrafficGB.toFixed(1)} GB${a.maxTrafficGB>0?`/${a.maxTrafficGB}`:""}`;
+        }
+        m += `\n`;
+      }
       await sendTelegram(chatId, m, env, [[{text:"🔙",callback_data:"admin_back"}]]);
       return;
     }
@@ -4733,7 +6199,7 @@ async function handleTelegramUpdate(update, env) {
     }
 
     // Unknown command
-    await sendTelegram(chatId, "دستور ناشناخته. /help را بزنید.", env);
+    await sendTelegramWithBack(chatId, "دستور ناشناخته. /help را بزنید.", env);
   } catch (error) {
     console.error("handleTelegramUpdate error:", shortError(error));
   }
@@ -4745,7 +6211,14 @@ async function handleStart(chatId, fromId, env) {
   // FIRST: Check if admin — admins skip registration
   const admin = await isAdminAsync(chatId, env);
   if (admin) {
-    await sendAdminMenu(chatId, env);
+    const isSuper = await isSuperAdmin(env, chatId);
+    if (isSuper) {
+      // Super admins get a choice between 3x-ui panel management and Cloudflare
+      await sendSuperAdminChoiceMenu(chatId, env);
+    } else {
+      // Panel admins get the limited admin menu directly
+      await sendAdminMenu(chatId, env);
+    }
     return;
   }
 
@@ -4769,19 +6242,20 @@ async function handleStart(chatId, fromId, env) {
 
 async function startRegistration(chatId, env) {
   const panels = await getPanels(env).catch(() => []);
+  const lang = await getUserLang(env, chatId);
   if (!panels.length) {
-    await sendTelegram(chatId, "❌ هیچ پنلی تنظیم نشده است.", env);
+    await sendTelegramWithBack(chatId, t(lang, "error") + " " + t(lang, "not_found"), env);
     return;
   }
   if (panels.length === 1) {
-    await statePut(env, `${STATE_REG_PREFIX}${chatId}`, { step: "email", panelId: panels[0].id }, MS_PER_HOUR);
-    await sendTelegram(chatId, "👋 به ربات مدیریت VPN خوش آمدید!\n\n📧 لطفاً ایمیل/شناسه کاربری خود را وارد کنید:", env, [
-      [{ text: "🔙 شروع مجدد", callback_data: "reg_cancel" }],
+    await statePut(env, `${STATE_REG_PREFIX}${chatId}`, { step: "email", panelId: panels[0].id, lang }, MS_PER_HOUR);
+    await sendTelegram(chatId, t(lang, "welcome") + "\n\n" + t(lang, "enter_email"), env, [
+      [{ text: t(lang, "reg_cancel"), callback_data: "reg_cancel" }],
     ]);
   } else {
-    await statePut(env, `${STATE_REG_PREFIX}${chatId}`, { step: "panel" }, MS_PER_HOUR);
+    await statePut(env, `${STATE_REG_PREFIX}${chatId}`, { step: "panel", lang }, MS_PER_HOUR);
     const buttons = panels.map((p) => [{ text: p.name, callback_data: `reg_panel:${p.id}` }]);
-    await sendTelegram(chatId, "👋 به ربات مدیریت VPN خوش آمدید!\n\n🖥️ لطفاً سرور خود را انتخاب کنید:", env, buttons);
+    await sendTelegram(chatId, t(lang, "welcome") + "\n\n" + t(lang, "select_server"), env, buttons);
   }
 }
 
@@ -4810,6 +6284,11 @@ async function handleRegistrationStep(chatId, regState, text, env) {
 
     const panel = await resolvePanelAsync(env, regState.panelId);
 
+    // Notify admins about new user registration
+    try {
+      await notifyAdminsNewUser(env, chatId, email, panel ? panel.name : regState.panelId);
+    } catch { /* ignore notification errors */ }
+
     // Create initial user backup
     try {
       const traffic = getClientTraffic(client);
@@ -4829,15 +6308,47 @@ async function handleRegistrationStep(chatId, regState, text, env) {
     } catch { /* ignore */ }
 
     const msg = `✅ ثبت‌نام موفق!\n\n${formatClient(client, panel)}`;
-    await sendTelegram(chatId, msg, env, buildUserViewButtons(email, regState.panelId, env));
+    await sendTelegram(chatId, msg, env, await buildUserViewButtons(chatId, email, regState.panelId, env));
   }
 }
 
 // ─── Admin Menu (Interactive) ─────────────────────────────────
 
+/**
+ * Show super admin a choice between 3x-ui panel management and Cloudflare.
+ * Only displayed when CLOUDFLARE_API_TOKEN is configured (otherwise skip
+ * straight to the 3x-ui menu, since the CF button would just error).
+ */
+async function sendSuperAdminChoiceMenu(chatId, env) {
+  const hasCfToken = Boolean(getCfToken(env));
+  if (!hasCfToken) {
+    await sendAdminMenu(chatId, env);
+    return;
+  }
+  const lang = await getUserLang(env, chatId);
+  const L = (k) => t(lang, k);
+  const menuText = L("super_admin_menu") + "\n\n" + L("select_option");
+  const buttons = [
+    [
+      { text: "🖥 3x-ui", callback_data: "sa_xui" },
+      { text: "☁️ Cloudflare", callback_data: "sa_cf" },
+    ],
+    [
+      { text: L("ssh_terminal"), callback_data: "admin_ssh" },
+    ],
+    [
+      { text: L("language"), callback_data: "admin_lang" },
+      { text: L("github"), url: "https://github.com/Raya-coder/3x-ui-bot" },
+    ],
+  ];
+  await sendTelegram(chatId, menuText, env, buttons);
+}
+
 async function sendAdminMenu(chatId, env) {
   const roleInfo = await getAdminRole(env, chatId);
   const isSuper = !roleInfo || roleInfo.role === "super";
+  const lang = await getUserLang(env, chatId);
+  const L = (k) => t(lang, k);
 
   /** @type {any[][]} */
   let buttons = [];
@@ -4845,95 +6356,89 @@ async function sendAdminMenu(chatId, env) {
 
   if (isSuper) {
     // ───── SUPER ADMIN — full menu ─────
-    menuText = "👑 پنل مدیریت سوپر ادمین";
+    menuText = L("super_admin_menu");
     buttons = [
+      [{ text: L("server_status"), callback_data: "admin_status" }],
       [
-        { text: "📊 وضعیت سرورها", callback_data: "admin_status" },
+        { text: L("search_user"), callback_data: "admin_search" },
+        { text: L("user_list"), callback_data: "admin_clients" },
+      ],
+      [{ text: L("create_user"), callback_data: "admin_create" }],
+      [
+        { text: L("panel_manage"), callback_data: "admin_panels" },
+        { text: L("inbound_manage"), callback_data: "admin_inbounds" },
+      ],
+      [{ text: L("node_manage"), callback_data: "admin_nodes" }],
+      [{ text: L("renewals"), callback_data: "admin_renewals" }],
+      [
+        { text: L("xray_manage"), callback_data: "admin_xray" },
+        { text: L("panel_restart"), callback_data: "admin_panel_restart" },
       ],
       [
-        { text: "🔍 جستجوی کاربر", callback_data: "admin_search" },
-        { text: "👥 لیست کاربران", callback_data: "admin_clients" },
+        { text: L("backup"), callback_data: "admin_backup" },
+        { text: L("export_config"), callback_data: "admin_export" },
       ],
       [
-        { text: "➕ ساخت کاربر جدید", callback_data: "admin_create" },
+        { text: L("daily_report"), callback_data: "admin_report" },
+        { text: L("server_logs"), callback_data: "admin_logs" },
       ],
       [
-        { text: "🖥️ مدیریت پنل‌ها", callback_data: "admin_panels" },
-        { text: "📦 مدیریت Inbound", callback_data: "admin_inbounds" },
+        { text: L("online_users"), callback_data: "admin_online" },
+        { text: L("versions"), callback_data: "admin_versions" },
       ],
       [
-        { text: "🌐 مدیریت Nodes", callback_data: "admin_nodes" },
+        { text: L("user_backups"), callback_data: "admin_user_backups" },
+        { text: L("api_tokens"), callback_data: "admin_api_tokens" },
       ],
       [
-        { text: "🔄 درخواست‌های تمدید", callback_data: "admin_renewals" },
+        { text: L("outbounds"), callback_data: "admin_outbounds" },
+        { text: L("settings"), callback_data: "admin_settings" },
       ],
       [
-        { text: "⚡ مدیریت Xray", callback_data: "admin_xray" },
-        { text: "🔄 ریستارت پنل", callback_data: "admin_panel_restart" },
+        { text: L("outbound_traffic"), callback_data: "admin_outbound_traffic" },
+        { text: L("reset_inbound_traffic"), callback_data: "admin_reset_inbound_traffic" },
       ],
       [
-        { text: "📦 بکاپ", callback_data: "admin_backup" },
-        { text: "📤 خروجی کانفیگ", callback_data: "admin_export" },
+        { text: L("ban_menu"), callback_data: "admin_ban_menu" },
+        { text: L("manage_admins"), callback_data: "admin_manage_admins" },
       ],
+      [{ text: L("error_logs"), callback_data: "admin_error_logs" }],
       [
-        { text: "📊 گزارش روزانه", callback_data: "admin_report" },
-        { text: "📋 لاگ سرور", callback_data: "admin_logs" },
+        { text: L("chart_traffic"), callback_data: "admin_chart" },
+        { text: L("stars_payment"), callback_data: "admin_stars" },
       ],
-      [
-        { text: "🟢 کاربران آنلاین", callback_data: "admin_online" },
-        { text: "📋 نسخه‌ها", callback_data: "admin_versions" },
-      ],
-      [
-        { text: "💾 بکاپ کاربران", callback_data: "admin_user_backups" },
-        { text: "🔑 توکن‌های API", callback_data: "admin_api_tokens" },
-      ],
-      [
-        { text: "📡 Outbounds", callback_data: "admin_outbounds" },
-        { text: "⚙️ تنظیمات پنل", callback_data: "admin_settings" },
-      ],
-      [
-        { text: "📤 ترافیک Outbound", callback_data: "admin_outbound_traffic" },
-        { text: "📥 ریست ترافیک Inbound", callback_data: "admin_reset_inbound_traffic" },
-      ],
-      [
-        { text: "🚫 بن/تعلیق", callback_data: "admin_ban_menu" },
-        { text: "👥 ادمین‌ها", callback_data: "admin_manage_admins" },
-      ],
-      [
-        { text: "📋 لاگ خطاها", callback_data: "admin_error_logs" },
-      ],
+      [{ text: L("ssh_terminal"), callback_data: "admin_ssh" }],
     ];
   } else {
     // ───── PANEL ADMIN — limited menu ─────
-    // Per requirements: admin can ONLY create/renew/delete users.
-    // Server settings, logs, tokens, panels, nodes, inbounds, ban,
-    // backup, broadcast, restart — all SUPER ADMIN only.
     const cnt = await getAdminCreatedCount(env, chatId);
     const mx = roleInfo.maxUsers || 0;
-    menuText = "🛠️ پنل مدیریت ادمین";
-    menuText += `\n📊 کاربران ساخته‌شده: ${cnt}${mx > 0 ? "/" + mx : ""}`;
-    menuText += "\n💡 شما فقط می‌توانید کاربر بسازید، تمدید کنید یا حذف کنید.";
+    menuText = L("admin_menu");
+    menuText += `\n${L("user_created_count")}: ${cnt}${mx > 0 ? "/" + mx : ""}`;
+    menuText += `\n${L("admin_limit")}`;
 
     buttons = [
+      [{ text: L("create_user"), callback_data: "admin_create" }],
       [
-        { text: "➕ ساخت کاربر جدید", callback_data: "admin_create" },
+        { text: L("user_list"), callback_data: "admin_clients" },
+        { text: L("search_user"), callback_data: "admin_search" },
       ],
-      [
-        { text: "👥 کاربران من", callback_data: "admin_clients" },
-        { text: "🔍 جستجوی کاربر", callback_data: "admin_search" },
-      ],
-      [
-        { text: "🔄 درخواست‌های تمدید", callback_data: "admin_renewals" },
-      ],
+      [{ text: L("renewals"), callback_data: "admin_renewals" }],
+      [{ text: L("buy_subscription"), callback_data: "admin_stars" }],
     ];
   }
 
   // Add support button if SUPPORT_USERNAME is configured
   const supportUser = getSupportUsername(env);
   if (supportUser) {
-    buttons.push([{ text: "🎧 پشتیبانی", url: `https://t.me/${supportUser}` }]);
+    buttons.push([{ text: L("support"), url: `https://t.me/${supportUser}` }]);
   }
-  menuText += "\n\n👇 انتخاب کنید:";
+  // Language selector + GitHub link (always shown)
+  buttons.push([
+    { text: L("language"), callback_data: "admin_lang" },
+    { text: L("github"), url: "https://github.com/Raya-coder/3x-ui-bot" },
+  ]);
+  menuText += `\n\n${L("select_option")}`;
   await sendTelegram(chatId, menuText, env, buttons);
 }
 
@@ -5046,7 +6551,7 @@ async function adminCanAccessClientCallback(chatId, client, callbackQueryId, env
 async function handleSearch(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /search <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /search <شناسه>", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5063,7 +6568,7 @@ async function handleSearch(chatId, args, env) {
     const msg = (searchRole && searchRole.role === "admin")
       ? `❌ کاربری با شناسه "${identifier}" در لیست کاربران شما یافت نشد.`
       : `❌ کاربری با شناسه "${identifier}" یافت نشد.`;
-    await sendTelegram(chatId, msg, env);
+    await sendTelegramWithBack(chatId, msg, env);
     return;
   }
   for (const { panel, client } of results) {
@@ -5076,20 +6581,20 @@ async function handleSearch(chatId, args, env) {
 async function handleUser(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /user <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /user <شناسه>", env);
     return;
   }
   const panelId = args[1] || null;
   const panel = panelId ? await resolvePanelAsync(env, panelId) : null;
 
   if (panelId && !panel) {
-    await sendTelegram(chatId, `❌ پنل "${panelId}" یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ پنل "${panelId}" یافت نشد.`, env);
     return;
   }
 
   const client = await getClientByIdentifier(identifier, env, panelId);
   if (!client) {
-    await sendTelegram(chatId, `❌ کاربری با شناسه "${identifier}" یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری با شناسه "${identifier}" یافت نشد.`, env);
     return;
   }
 
@@ -5098,7 +6603,7 @@ async function handleUser(chatId, args, env) {
 
   const resolvedPanel = panel || (await searchClientAcrossPanels(identifier, env))[0]?.panel;
   if (!resolvedPanel) {
-    await sendTelegram(chatId, "❌ پنل کاربر یافت نشد.", env);
+    await sendTelegramWithBack(chatId, "❌ پنل کاربر یافت نشد.", env);
     return;
   }
 
@@ -5109,7 +6614,7 @@ async function handleUser(chatId, args, env) {
 
 async function handleCreate(chatId, args, env) {
   if (args.length < 3) {
-    await sendTelegram(chatId, "استفاده: /create <شناسه> <روز> <حجم GB> [آیدی پنل]", env);
+    await sendTelegramWithBack(chatId, "استفاده: /create <شناسه> <روز> <حجم GB> [آیدی پنل]", env);
     return;
   }
   const identifier = args[0];
@@ -5118,13 +6623,13 @@ async function handleCreate(chatId, args, env) {
   const panelId = args[3] || null;
 
   if (!identifier || isNaN(days) || isNaN(gb) || days <= 0 || gb <= 0) {
-    await sendTelegram(chatId, "❌ مقادیر نامعتبر.", env);
+    await sendTelegramWithBack(chatId, "❌ مقادیر نامعتبر.", env);
     return;
   }
 
   const panel = panelId ? await resolvePanelAsync(env, panelId) : null;
   if (panelId && !panel) {
-    await sendTelegram(chatId, `❌ پنل "${panelId}" یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ پنل "${panelId}" یافت نشد.`, env);
     return;
   }
 
@@ -5143,16 +6648,16 @@ async function handleCreate(chatId, args, env) {
     await createClient(targetPanel, identifier, days, gb, { adminChatId: chatId });
     const client = await getClientByIdentifier(identifier, env, targetPanel.id);
     const msg = `✅ کاربر ساخته شد!\n\n${client ? formatClient(client, targetPanel) : ""}`;
-    await sendTelegram(chatId, msg, env);
+    await sendTelegramWithBack(chatId, msg, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا در ساخت کاربر: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا در ساخت کاربر: ${shortError(error)}`, env);
   }
 }
 
 async function handleDelete(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /delete <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /delete <شناسه>", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5166,25 +6671,25 @@ async function handleDelete(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   const { panel, client } = results[0];
   try {
     await deleteClient(panel, identifier, env);
-    await sendTelegram(chatId, `✅ کاربر "${identifier}" حذف شد.`, env);
+    await sendTelegramWithBack(chatId, `✅ کاربر "${identifier}" حذف شد.`, env);
     // Also delete from registered users
     const user = await findUserByEmail(env, identifier, panel.id);
     if (user) await deleteUser(env, user.chatId);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا در حذف: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا در حذف: ${shortError(error)}`, env);
   }
 }
 
 async function handleEnable(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /enable <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /enable <شناسه>", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5197,22 +6702,22 @@ async function handleEnable(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   const { panel, client } = results[0];
   try {
     await updateClient(panel, client, { enable: true });
-    await sendTelegram(chatId, `✅ کاربر "${identifier}" فعال شد.`, env);
+    await sendTelegramWithBack(chatId, `✅ کاربر "${identifier}" فعال شد.`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
 async function handleDisable(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /disable <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /disable <شناسه>", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5225,27 +6730,27 @@ async function handleDisable(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   const { panel, client } = results[0];
   try {
     await updateClient(panel, client, { enable: false });
-    await sendTelegram(chatId, `⛔ کاربر "${identifier}" غیرفعال شد.`, env);
+    await sendTelegramWithBack(chatId, `⛔ کاربر "${identifier}" غیرفعال شد.`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
 async function handleAddGB(chatId, args, env) {
   if (args.length < 2) {
-    await sendTelegram(chatId, "استفاده: /addgb <شناسه> <حجم GB>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /addgb <شناسه> <حجم GB>", env);
     return;
   }
   const identifier = args[0];
   const gb = Number(args[1]);
   if (!identifier || isNaN(gb) || gb <= 0) {
-    await sendTelegram(chatId, "❌ مقادیر نامعتبر.", env);
+    await sendTelegramWithBack(chatId, "❌ مقادیر نامعتبر.", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5258,16 +6763,16 @@ async function handleAddGB(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   const { panel, client } = results[0];
   try {
     await addGBToClient(panel, client, gb);
     const updated = await getClientByIdentifier(identifier, env, panel.id);
-    await sendTelegram(chatId, `✅ ${gb} GB حجم اضافه شد.\n\n${updated ? formatClient(updated, panel) : ""}`, env);
+    await sendTelegramWithBack(chatId, `✅ ${gb} GB حجم اضافه شد.\n\n${updated ? formatClient(updated, panel) : ""}`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
@@ -5277,7 +6782,7 @@ async function handleRenewAdmin(chatId, args, env) {
   const panelId = args[2] || null;
 
   if (!identifier || isNaN(days) || days <= 0) {
-    await sendTelegram(chatId, "استفاده: /renew <شناسه> <روز> [آیدی پنل]", env);
+    await sendTelegramWithBack(chatId, "استفاده: /renew <شناسه> <روز> [آیدی پنل]", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5290,7 +6795,7 @@ async function handleRenewAdmin(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   let target = results[0];
@@ -5301,16 +6806,16 @@ async function handleRenewAdmin(chatId, args, env) {
   try {
     await addDaysToClient(target.panel, target.client, days);
     const updated = await getClientByIdentifier(identifier, env, target.panel.id);
-    await sendTelegram(chatId, `✅ ${days} روز تمدید شد.\n\n${updated ? formatClient(updated, target.panel) : ""}`, env);
+    await sendTelegramWithBack(chatId, `✅ ${days} روز تمدید شد.\n\n${updated ? formatClient(updated, target.panel) : ""}`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
 async function handleLink(chatId, args, env) {
   const identifier = args[0];
   if (!identifier) {
-    await sendTelegram(chatId, "استفاده: /link <شناسه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /link <شناسه>", env);
     return;
   }
   let results = await searchClientAcrossPanels(identifier, env);
@@ -5323,13 +6828,13 @@ async function handleLink(chatId, args, env) {
     });
   }
   if (!results.length) {
-    await sendTelegram(chatId, `❌ کاربری یافت نشد.`, env);
+    await sendTelegramWithBack(chatId, `❌ کاربری یافت نشد.`, env);
     return;
   }
   const { panel, client } = results[0];
   const subId = client.subId || client.subid || client.sub_id || "";
   if (!subId) {
-    await sendTelegram(chatId, "❌ لینک اشتراک برای این کاربر موجود نیست.", env);
+    await sendTelegramWithBack(chatId, "❌ لینک اشتراک برای این کاربر موجود نیست.", env);
     return;
   }
   try {
@@ -5337,7 +6842,7 @@ async function handleLink(chatId, args, env) {
     const qrUrl = `${QR_CODE_API}?size=${QR_CODE_SIZE}x${QR_CODE_SIZE}&data=${encodeURIComponent(link)}`;
     await sendPhoto(chatId, qrUrl, `🔗 لینک اشتراک:\n${link}`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
@@ -5374,7 +6879,7 @@ async function handleClients(chatId, args, env) {
       const msg = isSuper
         ? "❌ کاربری یافت نشد."
         : "❌ شما هنوز هیچ کاربری نساخته‌اید.\n💡 از منو، «➕ ساخت کاربر جدید» را بزنید.";
-      await sendTelegram(chatId, msg, env);
+      await sendTelegramWithBack(chatId, msg, env);
       return;
     }
 
@@ -5397,7 +6902,7 @@ async function handleClients(chatId, args, env) {
 
     await sendTelegram(chatId, msg, env, buttons.length ? buttons : null);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
@@ -5465,7 +6970,7 @@ async function handleStatus(chatId, args, env) {
 
       await sendTelegram(chatId, msg, env, buttons);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا در دریافت وضعیت ${panel.name}: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا در دریافت وضعیت ${panel.name}: ${shortError(error)}`, env);
     }
   }
 }
@@ -5650,7 +7155,7 @@ async function handlePanelTest(chatId, args, env) {
     : panels;
 
   if (!targetPanels.length) {
-    await sendTelegram(chatId, `❌ پنل یافت نشد. استفاده: /paneltest [panelId]`, env);
+    await sendTelegramWithBack(chatId, `❌ پنل یافت نشد. استفاده: /paneltest [panelId]`, env);
     return;
   }
 
@@ -5787,9 +7292,9 @@ async function handleVersions(chatId, args, env) {
       const panelVer = await getPanelVersion(panel);
       const xrayVer = await getXrayVersion(panel);
       const msg = `📊 نسخه ها\n\n🖥️ سرور: ${panel.name}\n📡 پنل: ${panelVer}\n🔄 Xray: ${xrayVer || "نامشخص"}`;
-      await sendTelegram(chatId, msg, env);
+      await sendTelegramWithBack(chatId, msg, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5800,9 +7305,9 @@ async function handleXrayRestart(chatId, args, env) {
   for (const panel of panels) {
     try {
       await restartXray(panel);
-      await sendTelegram(chatId, `✅ Xray در سرور "${panel.name}" ریستارت شد.`, env);
+      await sendTelegramWithBack(chatId, `✅ Xray در سرور "${panel.name}" ریستارت شد.`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5813,9 +7318,9 @@ async function handleXrayStop(chatId, args, env) {
   for (const panel of panels) {
     try {
       await stopXray(panel);
-      await sendTelegram(chatId, `⛳ Xray در سرور "${panel.name}" متوقف شد.`, env);
+      await sendTelegramWithBack(chatId, `⛳ Xray در سرور "${panel.name}" متوقف شد.`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5825,9 +7330,9 @@ async function handleXrayVersionCmd(chatId, args, env) {
   for (const panel of panels) {
     try {
       const ver = await getXrayVersion(panel);
-      await sendTelegram(chatId, `🔄 Xray نسخه (${panel.name}): ${ver || "نامشخص"}`, env);
+      await sendTelegramWithBack(chatId, `🔄 Xray نسخه (${panel.name}): ${ver || "نامشخص"}`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5835,16 +7340,16 @@ async function handleXrayVersionCmd(chatId, args, env) {
 async function handleXrayUpdate(chatId, args, env) {
   const version = args[0];
   if (!version) {
-    await sendTelegram(chatId, "استفاده: /xray_update <نسخه>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /xray_update <نسخه>", env);
     return;
   }
   const panels = await getPanels(env);
   for (const panel of panels) {
     try {
       await updateXray(panel, version);
-      await sendTelegram(chatId, `✅ Xray به نسخه ${version} بروزرسانی شد (${panel.name}).`, env);
+      await sendTelegramWithBack(chatId, `✅ Xray به نسخه ${version} بروزرسانی شد (${panel.name}).`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5854,9 +7359,9 @@ async function handlePanelVersionCmd(chatId, args, env) {
   for (const panel of panels) {
     try {
       const ver = await getPanelVersion(panel);
-      await sendTelegram(chatId, `📡 نسخه پنل (${panel.name}): ${ver}`, env);
+      await sendTelegramWithBack(chatId, `📡 نسخه پنل (${panel.name}): ${ver}`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5866,9 +7371,9 @@ async function handlePanelUpdateCmd(chatId, args, env) {
   for (const panel of panels) {
     try {
       await updatePanel(panel);
-      await sendTelegram(chatId, `✅ پنل "${panel.name}" بروزرسانی شد.`, env);
+      await sendTelegramWithBack(chatId, `✅ پنل "${panel.name}" بروزرسانی شد.`, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
     }
   }
 }
@@ -5882,7 +7387,7 @@ async function handleListPanels(chatId, env) {
     const p = panels[i];
     msg += `${i + 1}. ${p.name} (${p.id})\n   🔗 ${p.panelUrl}\n\n`;
   }
-  await sendTelegram(chatId, msg, env);
+  await sendTelegramWithBack(chatId, msg, env);
 }
 
 async function startAddPanel(chatId, env) {
@@ -5928,14 +7433,14 @@ async function handleAddPanelStep(chatId, state, text, env) {
 async function handleDeletePanel(chatId, args, env) {
   const panelId = args[0];
   if (!panelId) {
-    await sendTelegram(chatId, "استفاده: /dellpanel <آیدی پنل>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /dellpanel <آیدی پنل>", env);
     return;
   }
   try {
     await removePanel(env, panelId);
-    await sendTelegram(chatId, `✅ پنل "${panelId}" حذف شد.`, env);
+    await sendTelegramWithBack(chatId, `✅ پنل "${panelId}" حذف شد.`, env);
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
@@ -5944,31 +7449,31 @@ async function handleDeletePanel(chatId, args, env) {
 async function handleMakeAdmin(chatId, env) {
   const allAdmins = await getAllAdminIdsAsync(env);
   if (allAdmins.length > 0) {
-    await sendTelegram(chatId, "❌ فقط زمانی که هیچ ادمینی وجود ندارد می‌توانید ادمین شوید.", env);
+    await sendTelegramWithBack(chatId, "❌ فقط زمانی که هیچ ادمینی وجود ندارد می‌توانید ادمین شوید.", env);
     return;
   }
   await setSuperAdmin(env, chatId);
-  await sendTelegram(chatId, `✅ شما به عنوان سوپر ادمین ثبت شدید!`, env);
+  await sendTelegramWithBack(chatId, `✅ شما به عنوان سوپر ادمین ثبت شدید!`, env);
 }
 
 async function handleAdminAdd(chatId, args, env) {
   const targetId = args[0];
   if (!targetId) {
-    await sendTelegram(chatId, "استفاده: /adminadd <chatId>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /adminadd <chatId>", env);
     return;
   }
   await addAdminId(env, targetId);
-  await sendTelegram(chatId, `✅ کاربر ${targetId} به عنوان ادمین اضافه شد.`, env);
+  await sendTelegramWithBack(chatId, `✅ کاربر ${targetId} به عنوان ادمین اضافه شد.`, env);
 }
 
 async function handleAdminDel(chatId, args, env) {
   const targetId = args[0];
   if (!targetId) {
-    await sendTelegram(chatId, "استفاده: /admindel <chatId>", env);
+    await sendTelegramWithBack(chatId, "استفاده: /admindel <chatId>", env);
     return;
   }
   await removeAdminId(env, targetId);
-  await sendTelegram(chatId, `✅ کاربر ${targetId} از ادمین‌ها حذف شد.`, env);
+  await sendTelegramWithBack(chatId, `✅ کاربر ${targetId} از ادمین‌ها حذف شد.`, env);
 }
 
 // ─── User Usage & Renewal Request ─────────────────────────────
@@ -5980,7 +7485,7 @@ async function handleUserUsage(chatId, env) {
 async function handleRenewalRequest(chatId, env) {
   const user = await getUser(env, chatId);
   if (!user) {
-    await sendTelegram(chatId, "❌ شما ثبت‌نام نکرده‌اید.", env);
+    await sendTelegramWithBack(chatId, "❌ شما ثبت‌نام نکرده‌اید.", env);
     return;
   }
 
@@ -6118,7 +7623,7 @@ async function handleBackup(chatId, args, env) {
       const caption = `📦 بکاپ - ${panel.name}\n🕐 ${new Date().toLocaleString("fa-IR")}`;
       await sendDocumentBuffer(chatId, backupBuffer, filename, caption, env);
     } catch (error) {
-      await sendTelegram(chatId, `❌ خطا در بکاپ ${panel.name}: ${shortError(error)}`, env);
+      await sendTelegramWithBack(chatId, `❌ خطا در بکاپ ${panel.name}: ${shortError(error)}`, env);
     }
   }
 }
@@ -6137,7 +7642,7 @@ async function handleExportConfig(chatId, env) {
     const msg = `📤 خروجی کانفیگ\n\n🖥️ پنل‌ها: ${panels.length}\n👥 ادمین‌ها: ${adminIds.length}\n👤 کاربران ثبت‌نام شده: ${users.length}\n\n\`\`\`json\n${JSON.stringify(exportData, null, 2)}\n\`\`\``;
     await sendTelegram(chatId, msg, env, null, "Markdown");
   } catch (error) {
-    await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+    await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
   }
 }
 
@@ -6171,7 +7676,12 @@ async function handleHelp(chatId, isAdmin, env) {
         `🔄 /xray_update <نسخه> — بروزرسانی Xray\n` +
         `📡 /panel_version — نسخه پنل\n` +
         `📡 /panel_update — بروزرسانی پنل\n\n` +
-        `🧪 /paneltest — تست اتصال به پنل و endpoint‌ها\n\n` +
+        `🧪 /paneltest — تست اتصال به پنل و endpoint‌ها\n` +
+        `☁️ /cf — مدیریت Cloudflare (DNS records)\n` +
+        `🖥️ /ssh — ترمینال SSH سرورها\n` +
+        `📊 /chart — نمودار مقایسه ترافیک پنل‌ها\n` +
+        `⭐ /stars — مدیریت پرداخت Stars (سوپر) / خرید اعتبار (ادمین)\n` +
+        `🌐 /lang <fa|en|zh|ru> — تغییر زبان\n\n` +
         `🖥️ مدیریت پنل:\n` +
         `/addpanel — افزودن پنل\n` +
         `/dellpanel <آیدی> — حذف پنل\n` +
@@ -6189,7 +7699,9 @@ async function handleHelp(chatId, isAdmin, env) {
         `/unsuspend <chatId> — لغو تعلیق\n` +
         `/bannedlist — لیست بن‌شدگان\n\n` +
         `/admin — پنل مدیریت`;
-      await sendTelegram(chatId, msg, env);
+      await sendTelegram(chatId, msg, env, [
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+      ]);
     } else {
       // ───── PANEL ADMIN — limited command list ─────
       const msg =
@@ -6206,7 +7718,9 @@ async function handleHelp(chatId, isAdmin, env) {
         `👥 /clients [صفحه] — لیست کاربران من\n\n` +
         `🔄 /renew — بررسی درخواست‌های تمدید از کاربران\n\n` +
         `/admin — پنل مدیریت`;
-      await sendTelegram(chatId, msg, env);
+      await sendTelegram(chatId, msg, env, [
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
+      ]);
     }
   } else {
     const msg =
@@ -6214,8 +7728,12 @@ async function handleHelp(chatId, isAdmin, env) {
       `/start — ثبت‌نام / مشاهده اطلاعات\n` +
       `/usage — مشاهده مصرف\n` +
       `/renew — درخواست تمدید\n` +
+      `/lang <fa|en|zh|ru> — تغییر زبان\n` +
+      `/stars — خرید اشتراک با Stars\n` +
       `/help — راهنما`;
-    await sendTelegram(chatId, msg, env);
+    await sendTelegram(chatId, msg, env, [
+      [{ text: "🔙 منوی اصلی", callback_data: "user_back" }],
+    ]);
   }
 }
 
@@ -6369,7 +7887,7 @@ async function handleCallbackQuery(callbackQuery, env) {
         if (messageId) await deleteMessage(chatId, messageId, env);
         await sendUserMenu(chatId, env);
       } else {
-        await sendTelegram(chatId, "❌ کاربر یافت نشد.", env);
+        await sendTelegramWithBack(chatId, "❌ کاربر یافت نشد.", env);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -6570,6 +8088,324 @@ async function handleCallbackQuery(callbackQuery, env) {
     }
 
     // ── Admin back to main menu ──
+    // ── Super admin choice menu (3x-ui vs Cloudflare) ──
+    if (data === "sa_xui") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await sendAdminMenu(chatId, env);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data === "sa_cf") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      // Cancel any active CF state
+      await stateDelete(env, `cf_add_action:${chatId}`);
+      await sendCfMainMenu(chatId, env, "fa");
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    // ── Cloudflare menu ──
+    if (data === "cf_back") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      await stateDelete(env, `cf_add_action:${chatId}`);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await sendCfMainMenu(chatId, env, "fa");
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data === "cf_zones") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await sendCfZonesList(chatId, env, "fa");
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    // ── User Stars payment (for regular users) ──
+    if (data === "user_stars") {
+      const plans = await getStarsPlans(env);
+      if (!plans.length) {
+        await sendTelegram(chatId, "❌ هیچ طرح پرداختی در دسترس نیست.", env, [
+          [{ text: "🔙", callback_data: "user_back" }],
+        ]);
+      } else {
+        let msg = "⭐ خرید اشتراک\n\n💡 با Stars تلگرام پرداخت کنید:\n";
+        const buttons = plans.map(p => [{
+          text: `${p.name} — ${p.stars}⭐`,
+          callback_data: `stars_buy:${p.id}`,
+        }]);
+        buttons.push([{ text: "🔙", callback_data: "user_back" }]);
+        await sendTelegram(chatId, msg, env, buttons);
+      }
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "cf_toggle_lang" || data === "user_lang" || data === "admin_lang") {
+      // Language selector — works for all users (CF menu, admin, user)
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const currentLang = await getUserLang(env, chatId);
+      const langNames = { fa: "فارسی", en: "English", zh: "中文", ru: "Русский" };
+      const buttons = [
+        [
+          { text: `🇮🇷 فارسی ${currentLang === "fa" ? "✅" : ""}`, callback_data: "setlang:fa" },
+          { text: `🇬🇧 English ${currentLang === "en" ? "✅" : ""}`, callback_data: "setlang:en" },
+        ],
+        [
+          { text: `🇨🇳 中文 ${currentLang === "zh" ? "✅" : ""}`, callback_data: "setlang:zh" },
+          { text: `🇷🇺 Русский ${currentLang === "ru" ? "✅" : ""}`, callback_data: "setlang:ru" },
+        ],
+        [{ text: "🔙", callback_data: admin ? "admin_back" : "user_back" }],
+      ];
+      await sendTelegram(chatId,
+        `🌐 انتخاب زبان / Select language / 选择语言 / Выбор языка\n\n` +
+        `زبان فعلی: ${langNames[currentLang] || "فارسی"}`,
+        env, buttons);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("setlang:")) {
+      const lang = data.slice("setlang:".length);
+      const validLangs = ["fa", "en", "zh", "ru"];
+      if (!validLangs.includes(lang)) {
+        await answerCallbackQuery(callbackQueryId, env, "نامعتبر");
+        return;
+      }
+      // For regular users, save in user record
+      const user = await getUser(env, chatId);
+      if (user) {
+        user.language = lang;
+        await kvPut(env, `${KV_USERS_PREFIX}${chatId}`, user);
+      } else {
+        // For admins who aren't registered users, store separately
+        await kvPut(env, `lang:${chatId}`, lang);
+      }
+      const langNames = { fa: "فارسی", en: "English", zh: "中文", ru: "Русский" };
+      const msg = {
+        fa: `✅ زبان تغییر کرد: فارسی`,
+        en: `✅ Language changed: English`,
+        zh: `✅ 语言已更改: 中文`,
+        ru: `✅ Язык изменен: Русский`,
+      };
+      await answerCallbackQuery(callbackQueryId, env, msg[lang]);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      // Return to appropriate menu
+      if (admin) {
+        await sendAdminMenu(chatId, env);
+      } else {
+        await sendUserMenu(chatId, env);
+      }
+      return;
+    }
+    if (data.startsWith("cf_zone:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const zoneId = data.slice("cf_zone:".length);
+      await sendCfZoneDnsRecords(chatId, env, zoneId, "fa");
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("cf_dns_page:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const parts = data.split(":");
+      const zoneId = parts[1];
+      const page = Number(parts[2]) || 1;
+      await sendCfZoneDnsRecords(chatId, env, zoneId, "fa", page);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("cf_dns:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const parts = data.split(":");
+      const zoneId = parts[1];
+      const recordId = parts.slice(2).join(":");
+      await sendCfDnsRecordDetail(chatId, env, zoneId, recordId, "fa");
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("cf_dns_toggle:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const parts = data.split(":");
+      const zoneId = parts[1];
+      const recordId = parts.slice(2).join(":");
+      try {
+        const records = await cfListDnsRecords(env, zoneId);
+        const record = records.find(r => r.id === recordId);
+        if (!record) throw new Error("رکورد یافت نشد");
+        await cfUpdateDnsRecord(env, zoneId, recordId, {
+          type: record.type,
+          name: record.name,
+          content: record.content,
+          ttl: record.ttl || 1,
+          proxied: !record.proxied,
+        });
+        if (messageId) await deleteMessage(chatId, messageId, env);
+        await sendCfDnsRecordDetail(chatId, env, zoneId, recordId, "fa");
+        await answerCallbackQuery(callbackQueryId, env,
+          record.proxied ? "پروکسی غیرفعال شد" : "پروکسی فعال شد");
+      } catch (error) {
+        await answerCallbackQuery(callbackQueryId, env, "خطا");
+        if (messageId) await deleteMessage(chatId, messageId, env);
+        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env,
+          [[{ text: "🔙", callback_data: `cf_zone:${zoneId}` }]]
+        );
+      }
+      return;
+    }
+    if (data.startsWith("cf_dns_del_confirm:")) {
+      // This handler is now unreachable — cf_dns_del_confirm uses act: tokens
+      // (see cfCallback function). Keeping the code for reference, but all
+      // new buttons use the act: token path which handles the delete
+      // confirmation in the act: handler above.
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const parts = data.split(":");
+      const zoneId = parts[1];
+      const recordId = parts.slice(2).join(":");
+      // Use action token for the actual delete (long callback_data)
+      const token = await setAction(chatId, "cf_dns_del_yes", `${zoneId}:${recordId}`, env, zoneId);
+      // For "خیر" (no), go back to record detail — also use act: token
+      const noToken = await cfCallback(chatId, "cf_dns", zoneId, recordId, env);
+      await sendTelegram(chatId,
+        `⚠️ آیا مطمئنید این DNS record حذف شود؟\n\n🆔 ${recordId}\n\n❌ این عمل قابل بازگشت نیست!`,
+        env,
+        [
+          [
+            { text: "✅ بله، حذف شود", callback_data: `act:${token}` },
+            { text: "❌ خیر", callback_data: noToken },
+          ],
+          [{ text: "🔙 رکوردها", callback_data: `cf_zone:${zoneId}` }],
+        ]
+      );
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    // ── Cloudflare: Add DNS record flow (multi-step FSM) ──
+    // Step 1: Select zone (from list of zones)
+    if (data === "cf_dns_add_zone") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      try {
+        const zones = await cfListZones(env);
+        if (!zones.length) {
+          await sendTelegram(chatId, "❌ هیچ دامنه‌ای یافت نشد.", env,
+            [[{ text: "🔙", callback_data: "cf_back" }]]
+          );
+          await answerCallbackQuery(callbackQueryId, env);
+          return;
+        }
+        const buttons = zones.slice(0, 30).map(z => [{
+          text: `${z.status === "active" ? "🟢" : "⏳"} ${z.name}`,
+          callback_data: `cf_dns_add_type:${z.id}`,
+        }]);
+        buttons.push([{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }]);
+        await sendTelegram(chatId,
+          "➕ افزودن DNS Record\n\n🌐 یک دامنه را انتخاب کنید:",
+          env, buttons);
+      } catch (error) {
+        await sendTelegram(chatId, `❌ ${shortError(error)}`, env,
+          [[{ text: "🔙", callback_data: "cf_back" }]]
+        );
+      }
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    // Step 2: Select record type (A, AAAA, CNAME, TXT, MX, ...)
+    if (data.startsWith("cf_dns_add_type:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const zoneId = data.slice("cf_dns_add_type:".length);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const types = ["A", "AAAA", "CNAME", "TXT", "MX", "NS", "SRV", "CAA"];
+      const buttons = [];
+      for (let i = 0; i < types.length; i += 3) {
+        const row = [];
+        for (let j = i; j < Math.min(i + 3, types.length); j++) {
+          row.push({ text: types[j], callback_data: `cf_dns_add_name:${zoneId}:${types[j]}` });
+        }
+        buttons.push(row);
+      }
+      buttons.push([{ text: "🔙 دامنه‌ها", callback_data: "cf_zones" }]);
+      await sendTelegram(chatId, "🏷 نوع DNS record را انتخاب کنید:", env, buttons);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    // Step 3: Prompt for record name
+    if (data.startsWith("cf_dns_add_name:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const parts = data.split(":");
+      const zoneId = parts[1];
+      const type = parts.slice(2).join(":");
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await statePut(env, `cf_add_action:${chatId}`, { step: "name", zoneId, type }, MS_PER_HOUR);
+      await sendTelegram(chatId,
+        `📛 نام record را وارد کنید (مثلاً @ یا sub یا www):\n\n💡 برای رکورد ریشه از @ استفاده کنید.`,
+        env,
+        [[{ text: "❌ انصراف", callback_data: "cf_back" }]]
+      );
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    // Step 4: Choose proxied → create the record
+    if (data.startsWith("cf_dns_add_proxied:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const proxied = data.slice("cf_dns_add_proxied:".length) === "1";
+      const cfAddState = await stateGet(env, `cf_add_action:${chatId}`);
+      if (!cfAddState || cfAddState.step !== "proxied") {
+        await answerCallbackQuery(callbackQueryId, env, "نشست منقضی شده");
+        if (messageId) await deleteMessage(chatId, messageId, env);
+        await sendTelegram(chatId, "❌ نشست منقضی شده است. دوباره تلاش کنید.", env,
+          [[{ text: "🔙", callback_data: "cf_back" }]]
+        );
+        return;
+      }
+      await stateDelete(env, `cf_add_action:${chatId}`);
+      try {
+        const result = await cfCreateDnsRecord(env, cfAddState.zoneId, {
+          type: cfAddState.type,
+          name: cfAddState.name,
+          content: cfAddState.content,
+          ttl: 1,  // Auto
+          proxied,
+        });
+        if (messageId) await deleteMessage(chatId, messageId, env);
+        const rec = result?.result || result;
+        const msg = `✅ DNS record ساخته شد!\n\n${formatCfDnsRecord(rec, "fa")}`;
+        await sendTelegram(chatId, msg, env,
+          [
+            [{ text: "🔙 رکوردها", callback_data: `cf_zone:${cfAddState.zoneId}` }],
+            [{ text: "➕ افزودن رکورد دیگر", callback_data: `cf_dns_add_type:${cfAddState.zoneId}` }],
+          ]
+        );
+        await answerCallbackQuery(callbackQueryId, env, "ساخته شد");
+      } catch (error) {
+        if (messageId) await deleteMessage(chatId, messageId, env);
+        await sendTelegram(chatId, `❌ خطا در ساخت رکورد: ${shortError(error)}`, env,
+          [
+            [{ text: "🔄 تلاش مجدد", callback_data: `cf_dns_add_type:${cfAddState.zoneId}` }],
+            [{ text: "🔙 منوی Cloudflare", callback_data: "cf_back" }],
+          ]
+        );
+        await answerCallbackQuery(callbackQueryId, env, "خطا");
+      }
+      return;
+    }
+
     if (data === "admin_back") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
       // Cancel any active states
@@ -6587,8 +8423,18 @@ async function handleCallbackQuery(callbackQuery, env) {
       await stateDelete(env, `suspend_min:${chatId}`);
       await stateDelete(env, `suspend_reason:${chatId}`);
       await stateDelete(env, `addadmin_action:${chatId}`);
+      await stateDelete(env, `cf_add_action:${chatId}`);  // Also cancel CF add state
+      await stateDelete(env, `stars_add_action:${chatId}`);  // Also cancel Stars add state
+      await stateDelete(env, `ssh_action:${chatId}`);  // Also cancel SSH state
+      // For super admins with CF token, go to choice menu; otherwise plain admin menu
+      const isSuper = await isSuperAdmin(env, chatId);
+      const hasCfToken = Boolean(getCfToken(env));
       if (messageId) await deleteMessage(chatId, messageId, env);
-      await sendAdminMenu(chatId, env);
+      if (isSuper && hasCfToken) {
+        await sendSuperAdminChoiceMenu(chatId, env);
+      } else {
+        await sendAdminMenu(chatId, env);
+      }
       await answerCallbackQuery(callbackQueryId, env);
       return;
     }
@@ -6677,6 +8523,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله، حذف شود", callback_data: `panel_del_yes:${panelId}` },
           { text: "❌ خیر", callback_data: "admin_panels" },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -6693,7 +8540,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           [{ text: "🔙 مدیریت پنل‌ها", callback_data: "admin_panels" }],
         ]);
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+        await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -6783,7 +8630,7 @@ async function handleCallbackQuery(callbackQuery, env) {
             [{ text: "🔄 ریستارت", callback_data: `xray_restart:${panel.id}` }, { text: "🔙 مدیریت Xray", callback_data: "admin_xray" }],
           ]);
         } catch (error) {
-          await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env);
+          await sendTelegramWithBack(chatId, `❌ خطا: ${shortError(error)}`, env);
         }
       }
       await answerCallbackQuery(callbackQueryId, env);
@@ -6949,6 +8796,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله، حذف شود", callback_data: `api_token_del_yes:${panelId}:${tokenId}` },
           { text: "❌ خیر", callback_data: `panel_api_tokens:${panelId}` },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -7094,6 +8942,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله، ریست شود", callback_data: `reset_inbound_yes:${panelId}` },
           { text: "❌ خیر", callback_data: "admin_reset_inbound_traffic" },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -7197,6 +9046,152 @@ async function handleCallbackQuery(callbackQuery, env) {
     }
 
     // ── Error logs ──
+    // ── Stars payment callbacks ──
+    if (data === "stars_add") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      await statePut(env, `stars_add_action:${chatId}`, { step: "name" }, MS_PER_HOUR);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await sendTelegram(chatId, "⭐ افزودن طرح پرداخت\n\n📝 نام طرح را وارد کنید (مثلاً: اشتراک ماهانه):", env, [
+        [{ text: "❌ انصراف", callback_data: "stars_menu" }],
+      ]);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data === "stars_menu") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      await stateDelete(env, `stars_add_action:${chatId}`);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await handleStarsMenu(chatId, env);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data === "stars_payments") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const payments = await getStarsPayments(env);
+      if (!payments.length) {
+        await sendTelegram(chatId, "❌ هیچ پرداختی ثبت نشده است.", env, [
+          [{ text: "🔙", callback_data: "stars_menu" }],
+        ]);
+      } else {
+        let msg = `📋 پرداخت‌های اخیر (${payments.length}):\n\n`;
+        for (const p of payments.slice(0, 20)) {
+          msg += `• ${p.stars}⭐ — ${p.planName}\n  👤 ${p.chatId}\n  🕐 ${new Date(p.timestamp).toLocaleString("fa-IR")}\n\n`;
+        }
+        await sendTelegram(chatId, msg, env, [
+          [{ text: "🔙", callback_data: "stars_menu" }],
+        ]);
+      }
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("stars_buy:")) {
+      // Stars purchase — available to ALL users (admins and regular users)
+      const planId = data.slice("stars_buy:".length);
+      const plans = await getStarsPlans(env);
+      const plan = plans.find(p => p.id === planId);
+      if (!plan) {
+        await answerCallbackQuery(callbackQueryId, env, "طرح یافت نشد");
+        return;
+      }
+      try {
+        await sendStarsInvoice(chatId,
+          plan.name,
+          plan.description || `پرداخت ${plan.stars} Stars`,
+          [{ label: plan.name, amount: plan.stars }],
+          { type: "stars_payment", planId: plan.id, planName: plan.name, stars: plan.stars },
+          env
+        );
+        await answerCallbackQuery(callbackQueryId, env, "فاکتور ارسال شد");
+      } catch (e) {
+        await answerCallbackQuery(callbackQueryId, env, "خطا در ارسال فاکتور");
+        await sendTelegram(chatId, `❌ خطا: ${shortError(e)}`, env);
+      }
+      return;
+    }
+
+    // ── Chart and Stars menu buttons ──
+    // ── SSH terminal ──
+    if (data === "admin_ssh") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const lang = await getUserLang(env, chatId);
+      await sendSshServerSelect(chatId, env, lang);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("ssh_panel:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const panelId = data.slice("ssh_panel:".length);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const lang = await getUserLang(env, chatId);
+      await statePut(env, `ssh_action:${chatId}`, { step: "command", panelId }, MS_PER_HOUR);
+      const panel = await resolvePanelAsync(env, panelId);
+      await sendTelegram(chatId,
+        `🖥️ SSH Terminal: ${panel ? panel.name : panelId}\n\n` + t(lang, "ssh_enter_command"),
+        env,
+        [
+          [{ text: "📋 دستورات سریع", callback_data: `ssh_quick:${panelId}` }],
+          [{ text: t(lang, "main_menu"), callback_data: "admin_back" }],
+        ]
+      );
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data.startsWith("ssh_quick:")) {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      const panelId = data.slice("ssh_quick:".length);
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const quickCmds = [
+        { label: "📊 System Info", cmd: "uname -a && uptime && free -h && df -h" },
+        { label: "🔄 Xray Status", cmd: "systemctl status x-ui" },
+        { label: "📋 Xray Logs", cmd: "journalctl -u x-ui --no-pager -n 30" },
+        { label: "🌐 Network", cmd: "ip addr show && ss -tlnp" },
+        { label: "👥 Who", cmd: "who && last -n 5" },
+        { label: "📦 Top Processes", cmd: "ps aux --sort=-%mem | head -10" },
+      ];
+      // All quick commands use action tokens (callback_data too long for direct encoding)
+      // IMPORTANT: pass "ssh" as panelId to setAction, NOT the real panelId.
+      // setAction strips panelId prefix from identifier — if we pass the real panelId,
+      // it strips it and the act: handler can't find the panelId anymore.
+      const buttons = [];
+      for (const c of quickCmds) {
+        const token = await setAction(chatId, "ssh_quick_cmd", `${panelId}|||${c.cmd}`, env, "ssh");
+        buttons.push([{ text: c.label, callback_data: `act:${token}` }]);
+      }
+      buttons.push([{ text: "🔙", callback_data: `ssh_panel:${panelId}` }]);
+      await sendTelegram(chatId, "📋 Quick Commands:", env, buttons);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
+    if (data === "admin_chart") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      await handleChart(chatId, [], env);
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+    if (data === "admin_stars") {
+      if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+      if (messageId) await deleteMessage(chatId, messageId, env);
+      const isSuper = await isSuperAdmin(env, chatId);
+      if (isSuper) {
+        await handleStarsMenu(chatId, env);
+      } else {
+        await handleStarsBuy(chatId, env);
+      }
+      await answerCallbackQuery(callbackQueryId, env);
+      return;
+    }
+
     if (data === "admin_error_logs") {
       if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
       if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
@@ -7361,6 +9356,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله", callback_data: `admin_remove_yes:${targetId}` },
           { text: "❌ خیر", callback_data: "admin_manage_admins" },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -7562,6 +9558,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله، حذف شود", callback_data: `inbound_del_yes:${panelId}:${inboundId}` },
           { text: "❌ خیر", callback_data: `panel_inbounds:${panelId}` },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -7694,6 +9691,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           { text: "✅ بله، حذف شود", callback_data: `node_del_yes:${panelId}:${nodeId}` },
           { text: "❌ خیر", callback_data: `panel_nodes:${panelId}` },
         ],
+        [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
       ]);
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -7757,6 +9755,183 @@ async function handleCallbackQuery(callbackQuery, env) {
       if (panelId && typeof identifier === "string" && identifier.startsWith(panelId + ":")) {
         identifier = identifier.slice(panelId.length + 1);
       }
+
+      // Cloudflare-specific actions bypass the panel/client lookup entirely.
+      // They store "zoneId:recordId" in identifier instead.
+      // These use act: tokens because direct callback_data would exceed
+      // Telegram's 64-byte limit (CF IDs are 32-char hex each).
+      if (action === "cf_dns" || action === "cf_dns_toggle" || action === "cf_dns_del_confirm" || action === "cf_dns_del_yes") {
+        if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+        if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+        const parts = identifier.split(":");
+        const zoneId = parts[0];
+        const recordId = parts.slice(1).join(":");
+
+        if (action === "cf_dns") {
+          // View record detail
+          if (messageId) await deleteMessage(chatId, messageId, env);
+          await sendCfDnsRecordDetail(chatId, env, zoneId, recordId, "fa");
+          await answerCallbackQuery(callbackQueryId, env);
+          return;
+        }
+
+        if (action === "cf_dns_toggle") {
+          // Toggle proxied status
+          try {
+            const records = await cfListDnsRecords(env, zoneId);
+            const record = records.find(r => r.id === recordId);
+            if (!record) throw new Error("رکورد یافت نشد");
+            await cfUpdateDnsRecord(env, zoneId, recordId, {
+              type: record.type,
+              name: record.name,
+              content: record.content,
+              ttl: record.ttl || 1,
+              proxied: !record.proxied,
+            });
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendCfDnsRecordDetail(chatId, env, zoneId, recordId, "fa");
+            await answerCallbackQuery(callbackQueryId, env,
+              record.proxied ? "پروکسی غیرفعال شد" : "پروکسی فعال شد");
+          } catch (error) {
+            await answerCallbackQuery(callbackQueryId, env, "خطا");
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env,
+              [[{ text: "🔙", callback_data: `cf_zone:${zoneId}` }]]
+            );
+          }
+          return;
+        }
+
+        if (action === "cf_dns_del_confirm") {
+          // Show delete confirmation
+          const delToken = await setAction(chatId, "cf_dns_del_yes", `${zoneId}:${recordId}`, env, "cf_zone");
+          if (messageId) await deleteMessage(chatId, messageId, env);
+          await sendTelegram(chatId,
+            `⚠️ آیا مطمئنید این DNS record حذف شود؟\n\n🆔 ${recordId}\n\n❌ این عمل قابل بازگشت نیست!`,
+            env,
+            [
+              [
+                { text: "✅ بله، حذف شود", callback_data: `act:${delToken}` },
+                // For "خیر", we need to go back to record detail — also use act: token
+                { text: "❌ خیر", callback_data: await cfCallback(chatId, "cf_dns", zoneId, recordId, env) },
+              ],
+              [{ text: "🔙 رکوردها", callback_data: `cf_zone:${zoneId}` }],
+            ]
+          );
+          await answerCallbackQuery(callbackQueryId, env);
+          return;
+        }
+
+        if (action === "cf_dns_del_yes") {
+          // Actually delete the record
+          try {
+            await cfDeleteDnsRecord(env, zoneId, recordId);
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendTelegram(chatId, "✅ DNS record حذف شد.", env,
+              [[{ text: "🔙 رکوردها", callback_data: `cf_zone:${zoneId}` }]]
+            );
+            await answerCallbackQuery(callbackQueryId, env, "حذف شد");
+          } catch (error) {
+            if (messageId) await deleteMessage(chatId, messageId, env);
+            await sendTelegram(chatId, `❌ خطا در حذف: ${shortError(error)}`, env,
+              [[{ text: "🔙 رکوردها", callback_data: `cf_zone:${zoneId}` }]]
+            );
+            await answerCallbackQuery(callbackQueryId, env, "خطا");
+          }
+          return;
+        }
+      }
+
+      // SSH quick command execution + interactive input
+      if (action === "ssh_quick_cmd" || action === "ssh_interactive") {
+        if (!admin) { await answerCallbackQuery(callbackQueryId, env, "دسترسی ندارید"); return; }
+        if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
+        // identifier format: "panelId|||command" for ssh_quick_cmd
+        // identifier format: "panelId|||input|||sessionId" for ssh_interactive
+        const parts = identifier.split("|||");
+        const sshPanelId = parts[0];
+        const sshPanel = await resolvePanelAsync(env, sshPanelId);
+        if (!sshPanel) {
+          await answerCallbackQuery(callbackQueryId, env, "پنل یافت نشد");
+          if (messageId) await deleteMessage(chatId, messageId, env);
+          await sendTelegram(chatId, "❌ Panel not found.", env, [
+            [{ text: "🔙", callback_data: "admin_ssh" }],
+          ]);
+          return;
+        }
+        const lang = await getUserLang(env, chatId);
+        try {
+          await answerCallbackQuery(callbackQueryId, env, t(lang, "ssh_running"));
+
+          let result;
+          if (action === "ssh_quick_cmd") {
+            // Quick command — execute directly
+            const sshCommand = parts.slice(1).join("|||");
+            result = await executeSshCommand(sshPanel, sshCommand, env);
+          } else {
+            // Interactive input — send to session
+            const input = parts[1] || "";
+            const sessionId = parts[2] || "";
+            if (sessionId) {
+              result = await sendSshInput(sshPanel, sessionId, input, env);
+            } else {
+              // No session — just re-run the command with input
+              result = await executeSshCommand(sshPanel, input, env);
+            }
+          }
+
+          if (messageId) await deleteMessage(chatId, messageId, env);
+
+          // Build output message with context info
+          const ctxLabel = result.context && result.context !== 'shell' ? ` (${result.context})` : '';
+          const cmdLabel = action === "ssh_interactive" ? `🎮 Input sent` : `💻 Quick Command`;
+          const msg = `${cmdLabel}${ctxLabel}\n\n${t(lang, "ssh_output")}\n\`\`\`\n${(result.output || '(no output)').slice(0, 3500)}\n\`\`\``;
+
+          // Build buttons from bridge's suggested buttons
+          const buttons = [];
+          const suggested = result.buttons || [];
+
+          if (suggested.length) {
+            for (let i = 0; i < suggested.length; i += 3) {
+              const row = [];
+              for (let j = i; j < Math.min(i + 3, suggested.length); j++) {
+                const token = await setAction(chatId, "ssh_interactive",
+                  `${sshPanelId}|||${suggested[j].input}|||${result.sessionId || ''}`, env, "ssh");
+                row.push({ text: suggested[j].label, callback_data: `act:${token}` });
+              }
+              buttons.push(row);
+            }
+          } else {
+            // Default buttons
+            const tEnter = await setAction(chatId, "ssh_interactive", `${sshPanelId}|||  |||${result.sessionId || ''}`, env, "ssh");
+            const tY = await setAction(chatId, "ssh_interactive", `${sshPanelId}|||y|||${result.sessionId || ''}`, env, "ssh");
+            const tN = await setAction(chatId, "ssh_interactive", `${sshPanelId}|||n|||${result.sessionId || ''}`, env, "ssh");
+            buttons.push([
+              { text: "⏎ Enter", callback_data: `act:${tEnter}` },
+              { text: "Y + ⏎", callback_data: `act:${tY}` },
+              { text: "N + ⏎", callback_data: `act:${tN}` },
+            ]);
+          }
+
+          buttons.push([
+            { text: "⌨️ New Command", callback_data: `ssh_panel:${sshPanelId}` },
+            { text: "📋 Quick Commands", callback_data: `ssh_quick:${sshPanelId}` },
+          ]);
+          buttons.push([{ text: t(lang, "main_menu"), callback_data: "admin_back" }]);
+
+          await sendTelegram(chatId, msg, env, buttons);
+        } catch (e) {
+          if (messageId) await deleteMessage(chatId, messageId, env);
+          await sendTelegram(chatId, `❌ SSH error: ${shortError(e)}`, env, [
+            [
+              { text: "🔄 Retry", callback_data: `ssh_panel:${sshPanelId}` },
+              { text: t(lang, "main_menu"), callback_data: "admin_back" },
+            ],
+          ]);
+        }
+        return;
+      }
+
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
         await answerCallbackQuery(callbackQueryId, env, "پنل یافت نشد");
@@ -7901,6 +10076,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
             { text: "✅ بله، ریست شود", callback_data: `act:${confirmToken}` },
             { text: "❌ خیر", callback_data: "admin_back" },
           ],
+          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
         await answerCallbackQuery(callbackQueryId, env, "");
         break;
@@ -7950,6 +10126,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
             { text: "✅ بله، حذف شود", callback_data: `act:${confirmToken}` },
             { text: "❌ خیر", callback_data: "admin_back" },
           ],
+          [{ text: "🔙 منوی اصلی", callback_data: "admin_back" }],
         ]);
         await answerCallbackQuery(callbackQueryId, env, "");
         break;
