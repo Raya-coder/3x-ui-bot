@@ -1,14 +1,7 @@
 🤖 3x-UI Telegram Bot
 ربات تلگرام مدیریت پنل 3x-UI، Cloudflare و SSH — نسخه کامل چندزبانه با پرداخت Telegram Stars
 
-<p align="center">
-<a href="https://github.com/Raya-coder/3x-ui-bot">
-<img src="https://img.shields.io/badge/GitHub-Repository-blue?style=for-the-badge&logo=github" alt="GitHub">
-</a>
-<img src="https://img.shields.io/badge/Platform-Cloudflare%20Workers-F38020?style=for-the-badge&logo=cloudflare" alt="Cloudflare Workers">
-<img src="https://img.shields.io/badge/3x--ui-v3.4.x-00ADD8?style=for-the-badge" alt="3x-ui v3.4.x">
-<img src="https://img.shields.io/badge/Languages-4--success?style=for-the-badge" alt="4 Languages">
-</p>
+GitHubCloudflare Workers3x-ui v3.4.x4 Languages
 
 رباتی قدرتمند و کاربرپسند برای مدیریت 3x-UI، اکانت Cloudflare و اجرای دستورات SSH — همه از طریق تلگرام روی Cloudflare Workers. با پشتیبانی از ۴ زبان (فارسی، انگلیسی، چینی، روسی) و پرداخت داخلی با Telegram Stars.
 
@@ -77,43 +70,15 @@
 ✅ دکمه زبان و GitHub در همه منوها
 ✅ دکمه پشتیبانی (اختیاری)
 📋 پیش‌نیازها
-نیازمندی
-توضیح
+نیازمندی	توضیح
 Cloudflare Account	برای اجرای Worker
 Wrangler CLI یا Dashboard	استقرار
 Telegram Bot Token	از @BotFather
 3x-ui Panel	v2.x یا v3.x (شامل v3.4.x)
 Cloudflare API Token	اختیاری — برای DNS management
 Node.js	اختیاری — برای SSH bridge
-
 🚀 نصب سریع
-bash
-
-# ۱. کلون مخزن
-git clone https://github.com/Raya-coder/3x-ui-bot.git
-cd 3x-ui-bot
-
-# ۲. ساخت KV Namespaces
-wrangler kv:namespace create "BOT_KV"
-wrangler kv:namespace create "BOT_STATE"
-
-# ۳. تنظیم wrangler.toml (با ID های دریافتی)
-
-# ۴. تنظیم Secrets
-wrangler secret put BOT_TOKEN
-wrangler secret put SUPER_ADMINS          # 123456789,987654321
-wrangler secret put CLOUDFLARE_API_TOKEN  # اختیاری
-wrangler secret put SSH_BRIDGE_URL        # اختیاری
-wrangler secret put SSH_BRIDGE_TOKEN      # اختیاری
-
-# ۵. استقرار
-wrangler deploy
-
-# ۶. تنظیم Webhook
-curl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<WORKER>.workers.dev/webhook"
-
-# ۷. ساخت اولین سوپر ادمین
-# در تلگرام: /start → /makeadmin
+# ۱. کلون مخزنgit clone https://github.com/Raya-coder/3x-ui-bot.gitcd 3x-ui-bot# ۲. ساخت KV Namespaceswrangler kv:namespace create "BOT_KV"wrangler kv:namespace create "BOT_STATE"# ۳. تنظیم wrangler.toml (با ID های دریافتی)# ۴. تنظیم Secretswrangler secret put BOT_TOKENwrangler secret put SUPER_ADMINS          # 123456789,987654321wrangler secret put CLOUDFLARE_API_TOKEN  # اختیاریwrangler secret put SSH_BRIDGE_URL        # اختیاریwrangler secret put SSH_BRIDGE_TOKEN      # اختیاری# ۵. استقرارwrangler deploy# ۶. تنظیم Webhookcurl "https://api.telegram.org/bot<TOKEN>/setWebhook?url=https://<WORKER>.workers.dev/webhook"# ۷. ساخت اولین سوپر ادمین# در تلگرام: /start → /makeadmin
 📖 راهنمای کامل: DEPLOY-GUIDE.md
 
 🎮 دستورات
@@ -300,3 +265,4 @@ QuickChart — نمودارها
 <br>
 ساخته‌شده با ❤️ برای جامعه متن‌باز
 </p>
+```
