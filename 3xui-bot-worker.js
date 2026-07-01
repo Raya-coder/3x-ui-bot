@@ -12,6 +12,80 @@
  *    ADMIN_CHAT_IDS       — Comma-separated admin Telegram IDs (or set via /makeadmin)
  *    PANELS_JSON          — JSON config for panels (or add via /addpanel)
  * ============================================================
+ *  Table of Contents (line numbers approximate, search for the
+ *  "─── Section Name ───" comment to jump to a section)
+ * ============================================================
+ *       17  Constants
+ *      155  Performance & Security Helpers
+ *      208  Entry Point
+ *      219  Fetch Handler
+ *      273  JSON Response Helper
+ *      288  Telegram initData Verification
+ *      387  Mini App API Handler
+ *      955  Scheduled Handler
+ *      978  Utility Functions
+ *     1143  Parse Command Payload
+ *     1200  Subscription Link
+ *     1300  KV Storage Helpers (BOT_KV)
+ *     1335  KV Storage Helpers (BOT_STATE)
+ *     1360  Action Tokens (BOT_STATE)
+ *     1433  User Management (KV)
+ *     1523  User Backup (for disaster recovery)
+ *     1600  Renewal Request Management (KV)
+ *     1644  Panel Configuration (KV + Env)
+ *     1851  Admin Detection (Async)
+ *     1933  Admin Role System
+ *     2146  Ban/Suspend System
+ *     2174  Error Logging (KV)
+ *     2215  Telegram API
+ *     2324  Panel API
+ *     2478  Client Data Extraction
+ *     2593  Traffic Calculation
+ *     2659  Traffic Merge from clientStats
+ *     2723  Inbound/Client Operations
+ *     3044  Client CRUD Operations
+ *     3304  Nodes Management
+ *     3363  API Tokens Management
+ *     3427  Hosts Management
+ *     3472  Fallbacks Management
+ *     3510  Outbounds Management
+ *     3559  Settings Management
+ *     3570  Panel Users Management
+ *     3629  Database Backup/Restore
+ *     3650  Server Status & Xray
+ *     3714  Format Client (Persian)
+ *     3791  Admin Inline Buttons
+ *     3917  Backup
+ *     3973  Xray Health Check
+ *     4025  Resource Alerts
+ *     4068  Daily Report
+ *     4119  Process Pending Renewals
+ *     4155  Traffic Charts (QuickChart API)
+ *     4258  Volume Warning (90%) + Expiry Reminder (3 days)
+ *     4356  New User Registration Notification
+ *     4372  Visual Progress Bar
+ *     4383  Multi-Language Support
+ *     4636  Telegram Stars Payment
+ *     4733  SSH Terminal Module (using ssh-bridge.js with context detection)
+ *     4860  HTTP API
+ *     4914  Cloudflare API Module
+ *     4957  Cloudflare: Zones
+ *     4969  Cloudflare: DNS Records
+ *     4989  Cloudflare: Formatting
+ *     5035  Cloudflare: Menu Rendering
+ *     5224  Telegram Update Handler
+ *     6328  Start & Registration
+ *     6435  Admin Menu (Interactive)
+ *     6630  Command Handlers
+ *     7265  Panel Endpoint Diagnostics (/paneltest)
+ *     7501  Panel Management Commands
+ *     7567  Admin Management
+ *     7599  User Usage & Renewal Request
+ *     7710  Backup & Export
+ *     7769  Help
+ *     7860  Callback Query Handler
+ *    10104  Admin Action Handler
+ * ============================================================
  */
 
 // ─── Constants ────────────────────────────────────────────────
@@ -29,6 +103,13 @@ const PER_PAGE = 10;
 
 const DEFAULT_CPU_RAM_ALERT_THRESHOLD = 80;
 const DEFAULT_ALERT_COOLDOWN_MINUTES = 60;
+
+// Shared inline-keyboard fragments. These exact button rows were being
+// hand-typed at 30+ call sites across the file (inconsistent spacing,
+// easy to typo the callback_data and silently break the button). Reuse
+// these instead of re-typing the literal.
+const BACK_TO_MAIN_MENU_BUTTON = [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+const BACK_BUTTON = [[{ text: "🔙", callback_data: "admin_back" }]];
 
 // KV key prefixes  (BOT_KV)
 const KV_USERS_PREFIX = "user:";
@@ -152,6 +233,59 @@ const XRAY_VERSION_PATHS = [
   { path: "/panel/api/xray/version", method: "GET" },
 ];
 
+// ─── Performance & Security Helpers ────────────────────────────
+
+// Every outbound fetch (Telegram API, panel API, Cloudflare API) goes
+// through this wrapper so a slow/unresponsive remote endpoint can't
+// hang a Worker invocation. Without this, a stalled panel could keep
+// an invocation (and its CPU-time billing) alive far longer than needed.
+const DEFAULT_FETCH_TIMEOUT_MS = 10000;
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = DEFAULT_FETCH_TIMEOUT_MS) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    return await fetch(url, { ...options, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`Request timed out after ${timeoutMs}ms: ${url}`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// Remembers, per panel + path + method, which URL candidate actually
+// worked last time. panelApiOnce() otherwise has to probe up to 5-7
+// URL variants (with/without apiPrefix, with/without "/panel", legacy
+// /xui/API/... path) sequentially on every single call — this cache
+// lets it jump straight to the known-good one, turning most calls
+// into a single round trip instead of several. Module-scope: persists
+// for the lifetime of the Worker isolate; entries self-heal (are
+// dropped) if a previously-working URL ever stops working.
+const panelUrlCandidateCache = new Map();
+
+// Simple in-memory token-bucket limiter for the /webhook endpoint.
+// Keyed per Telegram chat id, reset every WEBHOOK_RATE_WINDOW_MS.
+// This is best-effort (per-isolate, not global/distributed) but is
+// enough to blunt a single abusive chat hammering the bot, which
+// otherwise triggers a KV read/write + outbound fetch per message.
+const WEBHOOK_RATE_LIMIT = 20; // max updates per window per chat
+const WEBHOOK_RATE_WINDOW_MS = 10_000;
+const webhookRateBuckets = new Map();
+
+function isRateLimited(key) {
+  const now = Date.now();
+  const bucket = webhookRateBuckets.get(key);
+  if (!bucket || now - bucket.windowStart > WEBHOOK_RATE_WINDOW_MS) {
+    webhookRateBuckets.set(key, { windowStart: now, count: 1 });
+    return false;
+  }
+  bucket.count += 1;
+  return bucket.count > WEBHOOK_RATE_LIMIT;
+}
+
 // ─── Entry Point ──────────────────────────────────────────────
 
 export default {
@@ -178,7 +312,29 @@ async function handleFetch(request, env, ctx) {
 
     // ── Telegram webhook ──
     if (path === "/webhook" && method === "POST") {
+      // Verify this request actually came from Telegram. Telegram lets you
+      // set a secret token when registering the webhook (setWebhook's
+      // `secret_token` param); it echoes it back in this header on every
+      // call. Without this check, anyone who discovers the webhook URL
+      // could POST a forged Update — including a fake `from.id` matching
+      // a real admin's chat id — and the bot would treat it as a
+      // legitimate admin command.
+      if (env.WEBHOOK_SECRET) {
+        const provided = request.headers.get("X-Telegram-Bot-Api-Secret-Token");
+        if (provided !== env.WEBHOOK_SECRET) {
+          return new Response("Unauthorized", { status: 401 });
+        }
+      }
+
       const body = await request.json();
+      const chatKey = String(
+        body?.message?.chat?.id ?? body?.callback_query?.message?.chat?.id ?? "unknown"
+      );
+      if (isRateLimited(chatKey)) {
+        // Drop silently but still return 200 so Telegram doesn't retry/backoff the webhook itself.
+        return new Response("ok", { status: 200 });
+      }
+
       ctx.waitUntil(handleTelegramUpdate(body, env));
       return new Response("ok", { status: 200 });
     }
@@ -852,7 +1008,7 @@ async function handleMiniAppApi(request, env, path, method, url) {
         const candidates = buildApiUrlCandidates(panel, API_PATHS.SERVER_GET_DB);
         for (const u of candidates) {
           try {
-            const resp = await fetch(u, { method: "GET", headers });
+            const resp = await fetchWithTimeout(u, { method: "GET", headers });
             if (resp.ok) {
               const buffer = await resp.arrayBuffer();
               return new Response(buffer, {
@@ -1569,6 +1725,17 @@ async function getPendingRenewals(env) {
 // ─── Panel Configuration (KV + Env) ──────────────────────────
 
 function parsePanelsConfigFromEnv(env) {
+  // getBotToken/getGlobalAdminIds/getPanels/isAdminAsync all call this,
+  // and a single Telegram update can trigger a dozen of those calls.
+  // env is a fresh object per request in Workers, so caching a computed
+  // value on it is safe and avoids re-parsing PANELS_JSON repeatedly.
+  if (env && env.__panelsConfigCache) return env.__panelsConfigCache;
+  const result = parsePanelsConfigFromEnvUncached(env);
+  if (env) env.__panelsConfigCache = result;
+  return result;
+}
+
+function parsePanelsConfigFromEnvUncached(env) {
   const raw = env?.PANELS_JSON;
   if (raw) {
     const parsed = parseJson(raw);
@@ -1639,6 +1806,22 @@ function buildPanelObject(item, index, env) {
 }
 
 async function getPanels(env) {
+  // Called many times per Telegram update (once per admin-menu render,
+  // once per client lookup, etc). Cache the resolved promise on env so
+  // concurrent/sequential calls within one request share a single KV
+  // read + parse instead of repeating it.
+  if (env && env.__panelsPromiseCache) return env.__panelsPromiseCache;
+  const promise = getPanelsUncached(env);
+  if (env) {
+    env.__panelsPromiseCache = promise;
+    // If it fails, don't let a stale rejected promise keep failing every
+    // subsequent call in this request — clear it so the next call retries.
+    promise.catch(() => { if (env.__panelsPromiseCache === promise) env.__panelsPromiseCache = null; });
+  }
+  return promise;
+}
+
+async function getPanelsUncached(env) {
   // First try KV (dynamic panels added via bot)
   try {
     const kvPanels = await kvGet(env, KV_PANELS_KEY);
@@ -1697,6 +1880,9 @@ async function getPanels(env) {
 
 async function savePanelsToKV(env, panelsRaw) {
   await kvPut(env, KV_PANELS_KEY, panelsRaw);
+  // Panel list changed — invalidate the per-request cache so a
+  // subsequent getPanels() call in the same request sees fresh data.
+  if (env) env.__panelsPromiseCache = null;
 }
 
 async function addPanel(env, panelConfig) {
@@ -1762,23 +1948,24 @@ async function isAdminAsync(chatId, env) {
     }
   }
 
-  // 3. Check KV-stored admin list
-  try {
-    const kvAdmins = await kvGet(env, KV_ADMIN_IDS_KEY);
-    if (Array.isArray(kvAdmins) && kvAdmins.includes(id)) return true;
-  } catch { /* ignore */ }
+  // 3 & 4. Check KV-stored admin list and KV-stored panels' adminChatIds.
+  // These two KV reads are independent, so fire them in parallel instead
+  // of awaiting one after the other — halves the KV latency on the
+  // (common) path where the id isn't an env-configured admin.
+  const [kvAdmins, kvPanels] = await Promise.all([
+    kvGet(env, KV_ADMIN_IDS_KEY).catch(() => null),
+    kvGet(env, KV_PANELS_KEY).catch(() => null),
+  ]);
 
-  // 4. Check KV-stored panels for adminChatIds
-  try {
-    const kvPanels = await kvGet(env, KV_PANELS_KEY);
-    if (Array.isArray(kvPanels)) {
-      for (const panel of kvPanels) {
-        for (const adminId of normalizeIdList(panel.adminChatIds ?? panel.ADMIN_CHAT_IDS)) {
-          if (String(adminId) === id) return true;
-        }
+  if (Array.isArray(kvAdmins) && kvAdmins.includes(id)) return true;
+
+  if (Array.isArray(kvPanels)) {
+    for (const panel of kvPanels) {
+      for (const adminId of normalizeIdList(panel.adminChatIds ?? panel.ADMIN_CHAT_IDS)) {
+        if (String(adminId) === id) return true;
       }
     }
-  } catch { /* ignore */ }
+  }
 
   return false;
 }
@@ -1793,19 +1980,18 @@ async function getAllAdminIdsAsync(env) {
     }
   }
 
-  try {
-    const kvAdmins = await kvGet(env, KV_ADMIN_IDS_KEY);
-    if (Array.isArray(kvAdmins)) for (const id of kvAdmins) ids.add(String(id));
-  } catch { /* ignore */ }
+  const [kvAdmins, kvPanels] = await Promise.all([
+    kvGet(env, KV_ADMIN_IDS_KEY).catch(() => null),
+    kvGet(env, KV_PANELS_KEY).catch(() => null),
+  ]);
 
-  try {
-    const kvPanels = await kvGet(env, KV_PANELS_KEY);
-    if (Array.isArray(kvPanels)) {
-      for (const panel of kvPanels) {
-        for (const id of normalizeIdList(panel.adminChatIds ?? panel.ADMIN_CHAT_IDS)) ids.add(String(id));
-      }
+  if (Array.isArray(kvAdmins)) for (const id of kvAdmins) ids.add(String(id));
+
+  if (Array.isArray(kvPanels)) {
+    for (const panel of kvPanels) {
+      for (const id of normalizeIdList(panel.adminChatIds ?? panel.ADMIN_CHAT_IDS)) ids.add(String(id));
     }
-  } catch { /* ignore */ }
+  }
 
   return [...ids];
 }
@@ -1895,7 +2081,7 @@ async function rejectCommandIfNotSuper(chatId, env) {
   const isSuper = await isSuperAdmin(env, chatId);
   if (!isSuper) {
     await sendTelegram(chatId, "⛔ این دستور فقط برای سوپر ادمین قابل دسترسی است.", env,
-      [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]
+      BACK_TO_MAIN_MENU_BUTTON
     );
     return true;
   }
@@ -2117,7 +2303,7 @@ async function sendTelegram(chatId, text, env, buttons = null, parseMode = null)
   };
   if (parseMode) payload.parse_mode = parseMode;
   if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2140,7 +2326,7 @@ async function editMessage(chatId, messageId, text, env, buttons = null) {
   };
   if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
   try {
-    await fetch(`https://api.telegram.org/bot${token}/editMessageText`, {
+    await fetchWithTimeout(`https://api.telegram.org/bot${token}/editMessageText`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
@@ -2156,7 +2342,7 @@ async function sendDocument(chatId, fileUrl, caption, env, buttons = null) {
     caption: String(caption || "").slice(0, 1024),
   };
   if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendDocument`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2171,7 +2357,7 @@ async function sendDocumentBuffer(chatId, buffer, filename, caption, env, button
   formData.append("document", new Blob([buffer]), filename);
   if (caption) formData.append("caption", String(caption).slice(0, 1024));
   if (buttons) formData.append("reply_markup", JSON.stringify({ inline_keyboard: buttons }));
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendDocument`, {
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendDocument`, {
     method: "POST",
     body: formData,
   });
@@ -2186,7 +2372,7 @@ async function sendPhoto(chatId, photoUrl, caption, env, buttons = null) {
     caption: String(caption || "").slice(0, 1024),
   };
   if (buttons) payload.reply_markup = JSON.stringify({ inline_keyboard: buttons });
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendPhoto`, {
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendPhoto`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2200,7 +2386,7 @@ async function answerCallbackQuery(callbackQueryId, env, text = "") {
     callback_query_id: String(callbackQueryId),
     text: String(text || "").slice(0, 200),
   };
-  await fetch(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
+  await fetchWithTimeout(`https://api.telegram.org/bot${token}/answerCallbackQuery`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
@@ -2209,7 +2395,7 @@ async function answerCallbackQuery(callbackQueryId, env, text = "") {
 
 async function deleteMessage(chatId, messageId, env) {
   const token = getBotToken(env);
-  await fetch(`https://api.telegram.org/bot${token}/deleteMessage`, {
+  await fetchWithTimeout(`https://api.telegram.org/bot${token}/deleteMessage`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ chat_id: String(chatId), message_id: messageId }),
@@ -2303,7 +2489,17 @@ async function panelApiOnce(panel, path, methodUpper, body, debug) {
     headers["Content-Type"] = "application/json";
   }
 
-  const candidates = buildApiUrlCandidates(panel, path);
+  let candidates = buildApiUrlCandidates(panel, path);
+
+  // Try the previously-successful URL for this panel+path+method first,
+  // so a warm isolate resolves most calls in one round trip instead of
+  // probing every candidate in sequence.
+  const cacheKey = `${panel.id}::${methodUpper}::${path}`;
+  const cachedUrl = panelUrlCandidateCache.get(cacheKey);
+  if (cachedUrl && candidates.includes(cachedUrl) && candidates[0] !== cachedUrl) {
+    candidates = [cachedUrl, ...candidates.filter((u) => u !== cachedUrl)];
+  }
+
   let lastError = null;
 
   for (const url of candidates) {
@@ -2314,7 +2510,7 @@ async function panelApiOnce(panel, path, methodUpper, body, debug) {
     if (debug) console.error(`[API TRY] ${panel.name} ${methodUpper} ${url}`);
 
     try {
-      const response = await fetch(url, options);
+      const response = await fetchWithTimeout(url, options);
       const text = await response.text();
       const data = parseJson(text);
 
@@ -2329,6 +2525,7 @@ async function panelApiOnce(panel, path, methodUpper, body, debug) {
         throw error;
       }
 
+      panelUrlCandidateCache.set(cacheKey, url);
       return assertPanelPayload(data ?? text);
     } catch (error) {
       if (debug) console.error(`[API ERROR] ${panel.name} ${String(error?.message || error)}`);
@@ -2343,6 +2540,10 @@ async function panelApiOnce(panel, path, methodUpper, body, debug) {
     }
   }
 
+  // Whatever we had cached didn't pan out this round — drop it so the
+  // next call re-probes from scratch rather than always paying for a
+  // known-bad URL first.
+  panelUrlCandidateCache.delete(cacheKey);
   throw lastError || new Error(`Panel API failed: ${panel.name} ${path}`);
 }
 
@@ -3810,7 +4011,7 @@ async function autoBackupAllPanels(env) {
 
       for (const url of candidates) {
         try {
-          const response = await fetch(url, { method: "GET", headers });
+          const response = await fetchWithTimeout(url, { method: "GET", headers });
           if (!response.ok) {
             lastError = new Error(`HTTP ${response.status}`);
             continue;
@@ -4557,7 +4758,7 @@ async function sendStarsInvoice(chatId, title, description, prices, payload, env
   payload_data.provider_token = "";
   if (photoUrl) payload_data.photo_url = photoUrl;
 
-  const response = await fetch(`https://api.telegram.org/bot${token}/sendInvoice`, {
+  const response = await fetchWithTimeout(`https://api.telegram.org/bot${token}/sendInvoice`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload_data),
@@ -4626,7 +4827,7 @@ async function executeSshCommand(panel, command, env) {
     throw new Error("SSH bridge not configured. Set sshBridgeUrl in panel config or SSH_BRIDGE_URL env var.");
   }
 
-  const response = await fetch(`${bridgeUrl.replace(/\/+$/, "")}/exec`, {
+  const response = await fetchWithTimeout(`${bridgeUrl.replace(/\/+$/, "")}/exec`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: bridgeToken || "", command }),
@@ -4651,7 +4852,7 @@ async function sendSshInput(panel, sessionId, input, env) {
   const bridgeToken = panel.sshBridgeToken || env?.SSH_BRIDGE_TOKEN;
   if (!bridgeUrl) throw new Error("SSH bridge not configured");
 
-  const response = await fetch(`${bridgeUrl.replace(/\/+$/, "")}/send`, {
+  const response = await fetchWithTimeout(`${bridgeUrl.replace(/\/+$/, "")}/send`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ token: bridgeToken || "", sessionId, input }),
@@ -4815,7 +5016,7 @@ async function cfApi(env, path, method = "GET", body = null) {
   const options = { method, headers };
   if (body !== null && method !== "GET") options.body = JSON.stringify(body);
 
-  const response = await fetch(url, options);
+  const response = await fetchWithTimeout(url, options);
   const text = await response.text();
   let data;
   try { data = JSON.parse(text); } catch { data = { raw: text }; }
@@ -5114,7 +5315,7 @@ async function handleTelegramUpdate(update, env) {
     if (update.pre_checkout_query) {
       const token = getBotToken(env);
       try {
-        await fetch(`https://api.telegram.org/bot${token}/answerPreCheckoutQuery`, {
+        await fetchWithTimeout(`https://api.telegram.org/bot${token}/answerPreCheckoutQuery`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -5247,7 +5448,7 @@ async function handleTelegramUpdate(update, env) {
         await addGBToClient(panel, client, gb);
         const updated = await getClientByIdentifier(addgbState.identifier, env, addgbState.panelId);
         const msg = `✅ ${gb} GB حجم اضافه شد.\n\n${updated ? formatClient(updated, panel) : ""}`;
-        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : BACK_TO_MAIN_MENU_BUTTON;
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
@@ -5284,7 +5485,7 @@ async function handleTelegramUpdate(update, env) {
         await addDaysToClient(panel, client, days);
         const updated = await getClientByIdentifier(renewActionState.identifier, env, renewActionState.panelId);
         const msg = `✅ ${days} روز تمدید شد.\n\n${updated ? formatClient(updated, panel) : ""}`;
-        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : BACK_TO_MAIN_MENU_BUTTON;
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
         await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [
@@ -5389,7 +5590,7 @@ async function handleTelegramUpdate(update, env) {
           await createClient(panel, createAction.email, createAction.days, gb, { adminChatId: chatId });
           const client = await getClientByIdentifier(createAction.email, env, createAction.panelId);
           const msg = `✅ کاربر "${createAction.email}" ساخته شد.\n📅 ${createAction.days} روز | 📦 ${gb > 0 ? gb + " GB" : "نامحدود"}\n🖥️ سرور: ${panel.name}`;
-          const buttons = client ? await buildAdminClientButtons(chatId, client, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+          const buttons = client ? await buildAdminClientButtons(chatId, client, panel, env) : BACK_TO_MAIN_MENU_BUTTON;
           await sendTelegram(chatId, msg, env, buttons);
 
           // Send subscription link + QR code
@@ -6069,7 +6270,7 @@ async function handleTelegramUpdate(update, env) {
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان بن کرد", env); return; }
       const r = args.slice(1).join(" ") || "";
       await banUser(env, t, r);
-      await sendTelegram(chatId, `🚫 "${t}" بن شد.${r?`\n📝 ${r}`:""}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, `🚫 "${t}" بن شد.${r?`\n📝 ${r}`:""}`, env, BACK_BUTTON);
       try { await sendTelegram(t, `🚫 بن شدید.${r?`\n📝 ${r}`:""}`, env); } catch {}
       return;
     }
@@ -6077,7 +6278,7 @@ async function handleTelegramUpdate(update, env) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /unban <chatId>", env); return; }
       await unbanUser(env, t);
-      await sendTelegram(chatId, `✅ "${t}" رفع بن شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, `✅ "${t}" رفع بن شد.`, env, BACK_BUTTON);
       try { await sendTelegram(t, `✅ بن رفع شد.`, env); } catch {}
       return;
     }
@@ -6088,7 +6289,7 @@ async function handleTelegramUpdate(update, env) {
       if (await isAdminAsync(t, env)) { await sendTelegram(chatId, "❌ ادمین را نمی‌توان تعلیق کرد", env); return; }
       const r = args.slice(2).join(" ") || "";
       await suspendUser(env, t, m, r);
-      await sendTelegram(chatId, `⏸ "${t}" تعلیق شد (${m} دقیقه).${r?`\n📝 ${r}`:""}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, `⏸ "${t}" تعلیق شد (${m} دقیقه).${r?`\n📝 ${r}`:""}`, env, BACK_BUTTON);
       try { await sendTelegram(t, `⏸ تعلیق ${m} دقیقه.${r?`\n📝 ${r}`:""}`, env); } catch {}
       return;
     }
@@ -6096,7 +6297,7 @@ async function handleTelegramUpdate(update, env) {
       if (await rejectCommandIfNotSuper(chatId, env)) return;
       const t = args[0]; if (!t) { await sendTelegramWithBack(chatId, "استفاده: /unsuspend <chatId>", env); return; }
       await unsuspendUser(env, t);
-      await sendTelegram(chatId, `✅ تعلیق "${t}" لغو شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, `✅ تعلیق "${t}" لغو شد.`, env, BACK_BUTTON);
       return;
     }
     if (command === "bannedlist" && admin) {
@@ -6104,7 +6305,7 @@ async function handleTelegramUpdate(update, env) {
       const b = await getBannedUsers(env);
       if (!b.length) { await sendTelegram(chatId, "✅ بن شده‌ای نیست.", env); return; }
       let m = `🚫 بن شده (${b.length}):\n\n`; for (const x of b) m += `• ${x.chatId} — ${x.reason||"-"}\n`;
-      await sendTelegram(chatId, m, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, m, env, BACK_BUTTON);
       return;
     }
 
@@ -6127,7 +6328,7 @@ async function handleTelegramUpdate(update, env) {
         `✅ ادمین "${t}" اضافه شد.\n` +
         `🖥️ پنل: ${pl.join(", ")}\n` +
         `📊 محدودیت کاربر: ${mx>0?mx:"نامحدود"}\n` +
-        `📦 محدودیت حجم: ${maxTraffic>0?maxTraffic+" GB":"نامحدود"}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+        `📦 محدودیت حجم: ${maxTraffic>0?maxTraffic+" GB":"نامحدود"}`, env, BACK_BUTTON);
       try { await sendTelegram(t, `✅ ادمین شدید! پنل: ${pl.join(", ")}. /admin بزنید.`, env); } catch {}
       return;
     }
@@ -6139,7 +6340,7 @@ async function handleTelegramUpdate(update, env) {
       const targetRole = await getAdminRole(env, t);
       if (targetRole && targetRole.role === "super") { await sendTelegram(chatId, "❌ نمی‌توان سوپر ادمین را حذف کرد.", env); return; }
       await removePanelAdmin(env, t);
-      await sendTelegram(chatId, `✅ ادمین "${t}" حذف شد.`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, `✅ ادمین "${t}" حذف شد.`, env, BACK_BUTTON);
       return;
     }
     if (command === "admins" && admin) {
@@ -6154,7 +6355,7 @@ async function handleTelegramUpdate(update, env) {
         }
         m += `\n`;
       }
-      await sendTelegram(chatId, m, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, m, env, BACK_BUTTON);
       return;
     }
 
@@ -6525,7 +6726,7 @@ async function adminCanAccessClient(chatId, client, env) {
   if (comment === myMarker || comment.startsWith(myMarker + " ")) return true;
   await sendTelegram(chatId,
     "⛔ شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.", env,
-    [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+    BACK_TO_MAIN_MENU_BUTTON);
   return false;
 }
 
@@ -6543,7 +6744,7 @@ async function adminCanAccessClientCallback(chatId, client, callbackQueryId, env
   try {
     await sendTelegram(chatId,
       "⛔ شما فقط به کاربرانی که خودتان ساخته‌اید دسترسی دارید.", env,
-      [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+      BACK_TO_MAIN_MENU_BUTTON);
   } catch { /* ignore */ }
   return false;
 }
@@ -7603,7 +7804,7 @@ async function handleBackup(chatId, args, env) {
 
       for (const url of candidates) {
         try {
-          const response = await fetch(url, { method: "GET", headers });
+          const response = await fetchWithTimeout(url, { method: "GET", headers });
           if (!response.ok) {
             lastError = new Error(`HTTP ${response.status}`);
             continue;
@@ -8445,7 +8646,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       if (messageId) await deleteMessage(chatId, messageId, env);
       await handleStatus(chatId, [], env);
       // Show back button after status
-      await sendTelegram(chatId, "👇", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+      await sendTelegram(chatId, "👇", env, BACK_TO_MAIN_MENU_BUTTON);
       await answerCallbackQuery(callbackQueryId, env);
       return;
     }
@@ -8757,7 +8958,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const panelId = data.slice("panel_api_tokens:".length);
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -8779,7 +8980,7 @@ async function handleCallbackQuery(callbackQuery, env) {
         buttons.push([{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]);
         await sendTelegram(chatId, msg, env, buttons);
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, BACK_TO_MAIN_MENU_BUTTON);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -8810,7 +9011,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const tokenId = parts.slice(2).join(":");
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -8855,7 +9056,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const panelId = data.slice("panel_outbounds:".length);
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -8869,9 +9070,9 @@ async function handleCallbackQuery(callbackQuery, env) {
             msg += `🔹 ${ob.tag} (${ob.protocol || "نامشخص"})\n`;
           }
         }
-        await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, msg, env, BACK_TO_MAIN_MENU_BUTTON);
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, BACK_TO_MAIN_MENU_BUTTON);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -8903,7 +9104,7 @@ async function handleCallbackQuery(callbackQuery, env) {
         }
       }
       if (msg === `📤 ترافیک Outbound:\n\n`) msg += "❌ هیچ ترافیکی یافت نشد.";
-      await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+      await sendTelegram(chatId, msg, env, BACK_TO_MAIN_MENU_BUTTON);
       await answerCallbackQuery(callbackQueryId, env);
       return;
     }
@@ -8933,7 +9134,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const panelId = data.slice("reset_inbound_traffic:".length);
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -8954,7 +9155,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const panelId = data.slice("reset_inbound_yes:".length);
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -8965,7 +9166,7 @@ async function handleCallbackQuery(callbackQuery, env) {
         ]);
         await answerCallbackQuery(callbackQueryId, env, "ریست شد");
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env, "خطا");
       }
       return;
@@ -8997,7 +9198,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       const panelId = data.slice("panel_settings:".length);
       const panel = await resolvePanelAsync(env, panelId);
       if (!panel) {
-        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, "❌ پنل یافت نشد.", env, BACK_TO_MAIN_MENU_BUTTON);
         await answerCallbackQuery(callbackQueryId, env);
         return;
       }
@@ -9037,9 +9238,9 @@ async function handleCallbackQuery(callbackQuery, env) {
           msg += `🔐 امنیت:\n`;
           msg += `   Two-Factor: ${twoFactorEnable}\n`;
         }
-        await sendTelegram(chatId, msg, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, msg, env, BACK_TO_MAIN_MENU_BUTTON);
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]]);
+        await sendTelegram(chatId, `❌ خطا: ${shortError(error)}`, env, BACK_TO_MAIN_MENU_BUTTON);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -9199,7 +9400,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       try {
         const errors = await getErrorLogs(env, 20);
         if (!errors.length) {
-          await sendTelegram(chatId, "✅ هیچ خطایی ثبت نشده است.", env, [[{text:"🔙",callback_data:"admin_back"}]]);
+          await sendTelegram(chatId, "✅ هیچ خطایی ثبت نشده است.", env, BACK_BUTTON);
         } else {
           let msg = `📋 خطاهای اخیر (${errors.length}):\n\n`;
           for (const err of errors.slice(0, 15)) {
@@ -9212,7 +9413,7 @@ async function handleCallbackQuery(callbackQuery, env) {
           ]);
         }
       } catch (error) {
-        await sendTelegram(chatId, `❌ خطا در دریافت لاگ: ${shortError(error)}`, env, [[{text:"🔙",callback_data:"admin_back"}]]);
+        await sendTelegram(chatId, `❌ خطا در دریافت لاگ: ${shortError(error)}`, env, BACK_BUTTON);
       }
       await answerCallbackQuery(callbackQueryId, env);
       return;
@@ -9223,7 +9424,7 @@ async function handleCallbackQuery(callbackQuery, env) {
       if (await rejectIfNotSuper(chatId, callbackQueryId, env)) return;
       if (messageId) await deleteMessage(chatId, messageId, env);
       await clearErrorLogs(env);
-      await sendTelegram(chatId, "✅ خطاها پاک شدند.", env, [[{text:"🔙",callback_data:"admin_back"}]]);
+      await sendTelegram(chatId, "✅ خطاها پاک شدند.", env, BACK_BUTTON);
       await answerCallbackQuery(callbackQueryId, env, "پاک شد");
       return;
     }
@@ -10102,7 +10303,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
         await updateClient(panel, client, { enable: true });
         const updated = await getClientByIdentifier(identifier, env, panel.id);
         const msg = `✅ کاربر "${identifier}" فعال شد.\n\n${updated ? formatClient(updated, panel) : ""}`;
-        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : BACK_TO_MAIN_MENU_BUTTON;
         await sendTelegram(chatId, msg, env, buttons);
         await answerCallbackQuery(callbackQueryId, env, "✅ فعال شد");
         break;
@@ -10112,7 +10313,7 @@ async function handleAdminAction(chatId, action, panel, client, env, callbackQue
         await updateClient(panel, client, { enable: false });
         const updated = await getClientByIdentifier(identifier, env, panel.id);
         const msg = `⛔ کاربر "${identifier}" غیرفعال شد.\n\n${updated ? formatClient(updated, panel) : ""}`;
-        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : [[{ text: "🔙 منوی اصلی", callback_data: "admin_back" }]];
+        const buttons = updated ? await buildAdminClientButtons(chatId, updated, panel, env) : BACK_TO_MAIN_MENU_BUTTON;
         await sendTelegram(chatId, msg, env, buttons);
         await answerCallbackQuery(callbackQueryId, env, "⛔ غیرفعال شد");
         break;
@@ -10202,4 +10403,3 @@ function extractLogsFromResponse(response) {
   }
   return logs;
 }
-
